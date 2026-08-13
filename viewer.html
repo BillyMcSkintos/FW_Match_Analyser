@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FW Match Analyser</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#060d18;color:#e4e9f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;overflow:hidden}
+
+/* ── Layout ── */
+.layout{display:flex;height:100vh;overflow:hidden}
+.left{width:600px;flex-shrink:0;display:flex;flex-direction:column;background:#090f1e;border-right:1px solid #1a2540;overflow:hidden}
+.right{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:#060d18}
+
+/* ── Top bar ── */
+.bar{display:flex;align-items:center;gap:6px;padding:7px 10px;background:#060d18;border-bottom:1px solid #1a2540;flex-shrink:0}
+.bar-title{font-size:14px;font-weight:700;letter-spacing:.5px;color:#9fb0c4;text-transform:uppercase;flex:1}
+button{font-size:13px;padding:4px 10px;border:1px solid #2a3a5a;background:transparent;color:#9fb0c4;border-radius:3px;cursor:pointer;white-space:nowrap}
+button:hover{background:#1a2540;color:#e4e9f5}
+button.primary{background:#6fb3d922;border-color:#6fb3d966;color:#6fb3d9}
+button.primary:hover{background:#6fb3d933}
+.status{font-size:12px;color:#8a9ab0}
+
+/* ── Banners ── */
+.err-banner{background:#1a0808;border-bottom:1px solid #5a1a1a;padding:6px 10px;font-size:13px;color:#ff8a80;flex-shrink:0}
+.warn-banner{background:#1a1500;border-bottom:1px solid #3a2e00;padding:4px 10px;font-size:12px;color:#d4b95a;flex-shrink:0}
+.tag-warn{font-size:11px;padding:0 4px;border-radius:2px;background:#2a2000;color:#d4b95a;border:1px solid #3a2e00;font-weight:700}
+
+/* ── Meta bar ──
+   Home/away are pinned to the row's true left/right edges (justify-content:space-between,
+   not a centered cluster) so the scorers row below — using the same edge alignment — lines
+   up directly under each team's name instead of funneling toward an arbitrary center. The
+   timestamp used to share that row via a fixed-width reservation, but "scraped HH:MM:SS PM"
+   is wider than any fixed guess and overlapped the away team name — it gets its own small
+   centered line above the score instead, like a dateline, so it can never collide. */
+.meta{display:flex;flex-direction:column;gap:3px;padding:4px 10px;font-size:13px;color:#9fb0c4;flex-shrink:0;border-bottom:1px solid #1a2540}
+.meta-ts-row{text-align:center;font-size:10px;color:#5a6f8c;letter-spacing:.5px}
+.meta-top{display:flex;align-items:center;justify-content:space-between;width:100%}
+.meta .home{color:#6fb3d9;font-weight:700}
+.meta .away{color:#e0925c;font-weight:700}
+.header-score{font-size:18px;font-weight:700;font-family:monospace;color:#e4e9f5;letter-spacing:3px;padding:0 10px;flex-shrink:0}
+.meta-scorers{display:flex;width:100%;font-size:11px}
+.meta-scorers-col{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+.meta-scorers-col.home{align-items:flex-start;text-align:left;color:#6fb3d9}
+.meta-scorers-col.away{align-items:flex-end;text-align:right;color:#e0925c}
+.meta-scorers-col.assist{color:#8a9ab0}
+.scorer-item{font-weight:600}
+.scorer-min{font-weight:400;opacity:.8}
+.meta-divider{border-top:1px solid #1a2540;margin:6px 0}
+.meta-assists{display:flex;align-items:flex-start;width:100%;font-size:11px;gap:6px}
+.meta-assists .meta-scorers-col{flex:1}
+.meta-assist-label{flex:0 0 auto;font-size:9px;font-weight:700;color:#5a6f8c;text-transform:uppercase;letter-spacing:1px;padding-top:2px}
+
+/* ── Tabs ── */
+.tabs{display:flex;border-bottom:1px solid #1a2540;flex-shrink:0;padding:0 10px}
+.tab{padding:6px 10px;font-size:12px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;color:#8a9ab0}
+.tab.active{border-bottom-color:#6fb3d9;color:#e4e9f5}
+.opp-summary{display:flex;align-items:center;gap:6px;font-size:12px;color:#8a9ab0;padding:4px 10px;background:#060d18;border-bottom:1px solid #1a2540;flex-shrink:0;letter-spacing:.5px}
+.filter-pill{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid #2a3a5a;color:#8a9ab0;cursor:pointer;white-space:nowrap;background:transparent}
+.filter-pill:hover{background:#1a2540;color:#cdd6f4}
+.filter-pill.active{background:#1a2540;border-color:#4a5a7a;color:#e4e9f5;font-weight:600}
+.opp-summary-hint{margin-left:auto;font-size:10px;color:#5a6f8c}
+.panel{display:none}.panel.active{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.opp-list-wrap{position:relative;flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Timeline ── */
+.timeline-wrap{padding:4px 10px 0;border-bottom:1px solid #1a2540;flex-shrink:0}
+.timeline-svg{width:100%;height:56px;display:block}
+.tl-marker{cursor:pointer}
+.tl-marker .tl-dot{transition:opacity .1s,stroke-width .1s}
+.tl-marker:hover .tl-dot,.tl-marker.hovered .tl-dot{opacity:1;stroke:#e4e9f5;stroke-width:1.5}
+.tl-marker.selected .tl-dot{stroke:#e4e9f5;stroke-width:2}
+.tl-goal-glow{animation:tl-goal-pulse 2.2s ease-in-out infinite}
+@keyframes tl-goal-pulse{0%,100%{opacity:.3}50%{opacity:.55}}
+
+/* ── Opportunity list ── */
+.opp-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#1a2540 transparent}
+.opp-list::-webkit-scrollbar{width:4px}
+.opp-list::-webkit-scrollbar-thumb{background:#1a2540;border-radius:2px}
+
+.opp-row{display:flex;align-items:center;gap:6px;padding:4px 8px;border-left:2px solid transparent;cursor:pointer;transition:background .1s}
+.opp-row:hover,.opp-row.hovered{background:#0d1a2e}
+.opp-row.hovered.home{border-left-color:#6fb3d9}
+.opp-row.hovered.away{border-left-color:#e0925c}
+.opp-row.goal-row .opp-min{color:#e8c468;font-weight:700}
+.opp-min{font-size:14px;font-weight:700;min-width:28px;text-align:right;color:#9fb0c4;font-family:monospace}
+.opp-score{font-size:12px;min-width:32px;text-align:right;color:#8a9ab0;font-family:monospace}
+.opp-score.changed{color:#e8c468cc}
+.opp-start{font-size:11px;min-width:34px;padding:1px 4px;border-radius:2px;text-align:center;font-weight:700}
+.st-gk{background:#1e3a5f;color:#8ab8dd;border:1px solid #2a4a6a}
+.st-def{background:#1a3a1a;color:#79bb79;border:1px solid #2a4a2a}
+.st-mid{background:#2a1a4a;color:#b299d9;border:1px solid #3a2a5a}
+.st-ca{background:#3a1a1a;color:#e08080;border:1px solid #5a2a2a}
+.st-long{background:#00302a;color:#5cd9b8;border:1px solid #004a3a}
+
+/* ── Step expand ── */
+.step-block{padding:4px 8px 6px 36px;background:#070d1b;border-bottom:1px solid #0f1e35;display:none}
+.step-block.open{display:block}
+.step-table{width:100%;border-collapse:collapse}
+.step-tr td{padding:2px 4px;font-size:13px;vertical-align:middle}
+.step-tr.ca-step td{opacity:.75}
+.stype{display:inline-block;font-size:11px;font-weight:700;padding:1px 4px;border-radius:2px;white-space:nowrap;min-width:78px;text-align:center}
+.stype-start{background:#1e3a5f;color:#8ab8dd;border:1px solid #2a4a6a}
+.stype-mid{background:#1a2540;color:#8fa8c8;border:1px solid #2a3a5a}
+.stype-pbduel{background:#231646;color:#ab8ed9;border:1px solid #3a2a5a}
+.stype-shot{background:#3a2a00;color:#e0ac4a;border:1px solid #5a4400}
+.stype-sp{background:#002a3a;color:#5cbdd9;border:1px solid #004a6a}
+.stype-spduel{background:#00232f;color:#4ea8c4;border:1px solid #004a6a}
+.stype-fk{background:#3a1a00;color:#e08a4a;border:1px solid #6a3000}
+.stype-fkduel{background:#331700;color:#c97a3f;border:1px solid #6a3000}
+.p-nm{font-weight:600;color:#e4e9f5}
+.p-pos{font-size:11px;color:#8a9ab0}
+.p-status-pct{font-size:10px;color:#8a6a4a;margin-left:1px}
+.p-arr{color:#6b7f9c}
+.p-vs{color:#8a9ab0;font-size:12px;margin:0 2px}
+.val-item{display:inline-block;min-width:108px;vertical-align:middle}
+.val-lbl{display:inline-block;min-width:36px;color:#8a9ab0;font-size:12px}
+.val-num{display:inline-block;min-width:22px;text-align:right;margin-right:4px;font-weight:600}
+.val-word{color:#8a9ab0;font-size:12px;font-style:italic}
+.flag-hi{color:#e0c068;font-size:11px}.flag-pt{color:#c4b06a;font-size:11px}
+.flag-foul{color:#e87a72;font-size:11px}.flag-yc{color:#f0d070;font-size:11px}
+.flag-warn{color:#e0c068;font-size:11px}
+.out-badge{font-size:11px;font-weight:700;padding:1px 5px;border-radius:2px;white-space:nowrap}
+.ob-goal{background:#1a5a1a;color:#7ad9a0}.ob-saved{background:#5a3a00;color:#e0ac4a}
+.ob-post{background:#5a3a00;color:#e8b458}.ob-blocked{background:#2a1a5a;color:#ab8ed9}
+.ob-intercept{background:#2a1a5a;color:#ab8ed9}.ob-corner{background:#002a5a;color:#5cadd9}
+.ob-foul{background:#3a2a00;color:#e0c068}.ob-fk{background:#3a1800;color:#e0895a}
+.ob-fumbled{background:#3a1800;color:#e0895a}
+.ob-cleared,.ob-won{background:#1a2030;color:#8a9ab0}
+
+/* ── Tactical events ── */
+.tac-row{display:flex;align-items:center;gap:7px;padding:3px 8px;border-left:2px solid transparent;font-size:11px;color:#8a9ab0}
+.tac-min{font-family:monospace;font-weight:600;min-width:28px;text-align:right;color:#6b7f9c}
+.tac-icon{min-width:14px;text-align:center;font-size:11px}
+.tac-text{flex:1}
+.tac-impact{color:#6b7f9c;font-size:10px;font-family:monospace}
+.tac-half{text-align:center;padding:6px 0;font-size:10px;letter-spacing:3px;color:#5a6f8c;border-top:1px solid #1a2540;border-bottom:1px solid #1a2540;margin:3px 0}
+
+/* ── Legend ── */
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:5px 10px;border-top:1px solid #1a2540;flex-shrink:0}
+.leg-item{display:flex;align-items:center;gap:4px;font-size:11px;color:#8a9ab0;letter-spacing:.5px;text-transform:uppercase}
+.leg-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* ── Pitch ── */
+/* Right padding reserves room for .right-overlay (Chain Detail + narrative) so the
+   pitch centers in the space actually left over instead of sitting underneath it. */
+.pitch-wrap{position:relative;height:100%;width:100%;display:flex;align-items:center;justify-content:center;padding:12px;padding-right:400px}
+/* Chain Detail + narrative stack on the right, above the pitch — narrative sits below
+   Chain Detail rather than overlaying the opportunity list on the left. It grows with
+   its content instead of scrolling internally, so the pitch reserves space to its left
+   (via .pitch-wrap's padding) rather than centering underneath this column. */
+.right-overlay{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;width:380px;pointer-events:none}
+.pass-summary{background:rgba(4,9,18,.94);border:1px solid #1a2540;border-radius:6px;padding:8px 10px;width:100%;max-height:50%;overflow-y:auto;pointer-events:none;font-size:12px;flex-shrink:0}
+.ps-title{font-size:10px;color:#8a9ab0;letter-spacing:2px;text-transform:uppercase;margin-bottom:5px;display:flex;justify-content:space-between}
+.ps-team{font-size:11px;letter-spacing:2px;text-transform:uppercase;padding:3px 0;border-bottom:1px solid}
+.ps-row{display:flex;align-items:center;gap:4px;padding:2px 0;border-bottom:1px solid #0a1525}
+.ps-route{font-size:12px;flex:1;white-space:nowrap}
+.ps-q{font-size:13px;font-weight:700;min-width:24px;text-align:right}
+.raw-panel{width:100%;border:1px solid #1a2540;border-radius:6px;background:rgba(5,11,20,.94);box-shadow:0 4px 12px rgba(0,0,0,.4);pointer-events:auto}
+.raw-panel pre{font-family:monospace;font-size:13px;line-height:1.6;padding:10px 12px;color:#9fb0c4;white-space:pre-wrap;word-break:break-all}
+
+/* ── Raw/Tele panels ── */
+.raw-box{flex:1;overflow-y:auto;padding:10px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.5;color:#8a9ab0;scrollbar-width:thin;scrollbar-color:#1a2540 transparent}
+.raw-line{padding:0 2px;border-left:2px solid transparent}
+.raw-line.raw-hl{background:#0d1a2e}
+
+/* ── Stats panel: derived distributions (shot/pass types, long balls) ── */
+.dist-title{font-size:11px;color:#9fb0c4;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin:14px 0 8px;padding-top:10px;border-top:1px solid #1a2540}
+.dist-title:first-child{margin-top:2px;padding-top:0;border-top:none}
+.qt-hint{font-size:10px;color:#5a6f8c;margin-bottom:7px;line-height:1.5}
+.no-data{display:flex;align-items:center;justify-content:center;flex:1;color:#8a9ab0;font-size:14px}
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- LEFT PANEL -->
+  <div class="left">
+    <div class="bar" style="flex-wrap:wrap;row-gap:0">
+      <div id="meta-bar" style="display:none;width:100%;border-bottom:1px solid #1a2540;padding:4px 0 6px" class="meta"></div>
+      <span class="bar-title">FW ANALYSER</span>
+      <span class="status" id="status">Ready</span>
+      <button class="primary" id="btn-scrape">Scrape</button>
+      <button id="btn-load">Load</button>
+      <button id="btn-clear" style="color:#e05050">Clear</button>
+      <button id="btn-new-tab" title="Open FinalWhistle and a blank analyser tab so you can scrape a different match to compare">New Tab</button>
+    </div>
+    <div id="errors"></div>
+    <div class="tabs" id="tabs" style="display:none">
+      <div class="tab active" data-tab="opps">Opportunities</div>
+      <div class="tab" data-tab="stats">Statistics</div>
+      <div class="tab" data-tab="phases">Phases</div>
+      <div class="tab" data-tab="raw-narrative">Narrative</div>
+      <div class="tab" data-tab="raw-telemetry">Telemetry</div>
+    </div>
+    <div class="opp-summary" id="opp-summary" style="display:none"></div>
+    <div class="timeline-wrap" id="timeline-wrap" style="display:none"></div>
+
+    <div id="panel-opps" class="panel active">
+      <div class="opp-list-wrap">
+        <div class="opp-list" id="opp-list"><div class="no-data">Scrape a match to begin</div></div>
+      </div>
+      <div class="legend">
+        <div class="leg-item"><div class="leg-dot" style="background:#6fb3d9"></div>home</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#e0925c"></div>away</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#d9695f"></div>cleared</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#e8c468"></div>goal</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#9aa5b5"></div>saved</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#d4a850"></div>intercept</div>
+        <div class="leg-item">┄ dashed = CA / restart</div>
+        <div class="leg-item">PK = penalty spot</div>
+      </div>
+    </div>
+    <div id="panel-stats" class="panel"><div class="no-data">No statistics.</div></div>
+    <div id="panel-phases" class="panel"><div class="no-data">No match data.</div></div>
+    <div id="panel-raw-narrative" class="panel"><div class="raw-box" id="raw-narrative-box"></div></div>
+    <div id="panel-raw-telemetry" class="panel"><div class="raw-box" id="raw-telemetry-box"></div></div>
+  </div>
+
+  <!-- RIGHT PANEL: PITCH -->
+  <div class="right" id="pitch-panel">
+    <div class="pitch-wrap">
+      <div id="pitch-container" style="height:100%;width:100%;display:flex;align-items:center;justify-content:center"></div>
+      <div class="right-overlay">
+        <div class="pass-summary" id="pass-summary" style="display:none"></div>
+        <div id="raw-panel" class="raw-panel" style="display:none"><pre id="raw-text"></pre></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="utils.js"></script>
+<script src="parser.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

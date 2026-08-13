@@ -1,0 +1,59 @@
+'use strict';
+importScripts('utils.js');
+
+chrome.action.onClicked.addListener(async () => {
+  const base = chrome.runtime.getURL('viewer.html');
+  // '*' suffix so an already-open tab is found whether or not it carries the
+  // ?autoscrape=1 / ?fresh=1 query string viewer.html gets launched with below.
+  const existing = await chrome.tabs.query({ url: base + '*' });
+  if (existing.length > 0) {
+    await chrome.tabs.update(existing[0].id, { active: true });
+    await chrome.windows.update(existing[0].windowId, { focused: true });
+  } else {
+    // Fresh launch (not already open in a tab) — the tab clears any previous
+    // scrape and pulls in whatever match report is currently open itself, via
+    // the ?autoscrape=1 flag reusing the normal Scrape button flow, so it opens
+    // already showing current data instead of stale leftovers from last time.
+    chrome.tabs.create({ url: base + '?autoscrape=1' });
+  }
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'SCRAPE_PAGE') {
+    scrapeActiveTab()
+      .then(sendResponse)
+      .catch(err => sendResponse({ ok: false, errors: [String(err)] }));
+    return true;
+  }
+});
+
+async function scrapeActiveTab() {
+  // Query for FinalWhistle tabs directly (matches host_permissions) instead of listing
+  // every tab and filtering by URL substring, and pick the most-recently-accessed one
+  // with a single pass instead of sorting the whole result just to take the max.
+  const tabs = await chrome.tabs.query({ url: 'https://*.finalwhistle.org/*' });
+  const fwTab = mostRecentlyAccessed(tabs);
+
+  if (!fwTab) {
+    // Fall back to active tab
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!active?.url?.includes('finalwhistle.org')) {
+      return { ok: false, errors: ['No FinalWhistle tab found. Open a match report first.'] };
+    }
+    return runScraper(active.id);
+  }
+  return runScraper(fwTab.id);
+}
+
+async function runScraper(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['scraper.js'] });
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => fwScrapeWithTelemetry(),
+  });
+  const data = result || { ok: false, errors: ['No result from scraper'] };
+  if (data.narrative || data.telemetry) {
+    await chrome.storage.local.set({ lastScrape: data });
+  }
+  return data;
+}
