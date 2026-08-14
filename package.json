@@ -1,9 +1,11 @@
 {
   "name": "fw-match-analyser",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "FinalWhistle Match Analyser browser extension",
   "scripts": {
-    "test": "node --test parser.test.js viewer.test.js scraper.test.js analytics.test.js"
+    "test": "node --test parser.test.js viewer.test.js scraper.test.js analytics.test.js smoke.test.js integration.test.js",
+    "check": "node --check parser.js && node --check analytics.js && node --check viewer.js && node --check scraper.js && node --check background.js && node --check utils.js",
+    "verify": "npm run test && npm run check"
   }
 }

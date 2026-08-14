@@ -7,6 +7,15 @@
  */
 importScripts('utils.js');
 
+// D11 (Phase D, storage hardening): tags the shape of what gets persisted to
+// chrome.storage.local, so a future change to that shape has something to check against
+// instead of guessing whether an old stored object predates it. viewer.js's render()
+// does not currently read this — it already tolerates a completely bare
+// {narrative, telemetry, homeTeam, awayTeam} object with no other fields at all (see
+// viewer.test.js's old-scrape compatibility tests) — this exists purely so a REAL future
+// migration has a version to branch on, without introducing a migration framework now.
+const LASTSCRAPE_SCHEMA_VERSION = 1;
+
 chrome.action.onClicked.addListener(async () => {
   const base = chrome.runtime.getURL('viewer.html');
   // '*' suffix so an already-open tab is found whether or not it carries the
@@ -65,7 +74,7 @@ async function runScraper(tabId) {
   });
   const data = result || { ok: false, errors: ['No result from scraper'] };
   if (data.narrative || data.telemetry) {
-    await chrome.storage.local.set({ lastScrape: data });
+    await chrome.storage.local.set({ lastScrape: { ...data, schemaVersion: LASTSCRAPE_SCHEMA_VERSION } });
   }
   return data;
 }

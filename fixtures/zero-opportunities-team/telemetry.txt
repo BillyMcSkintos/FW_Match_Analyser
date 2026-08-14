@@ -1,0 +1,5 @@
+5' - H - O_MID_START
+5' - H - V_PASS - (30)
+5' - A - V_ASSISTANCE - (40)
+5' - H - V_RECEPTION - (25)
+5' - A - V_TACKLING - (70)

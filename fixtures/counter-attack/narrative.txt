@@ -1,0 +1,20 @@
+Minute 70
+Opportunity for Home Team.
+Midfield
+Player A [RWB] attempted low good pass to Player B [RW]
+Player C [LB] got poor assistance, and was close.
+Player B [RW] made excellent reception and took control of the ball.
+Counter attack
+Midfield
+Player X [FW] attempted low good pass to Player Y [LW]
+Player D [CM] got weak assistance, and was close.
+Player Y [LW] made excellent reception and took control of the ball.
+Penalty Box
+Player Y [LW] attempted low decent pass to Player X [FW]
+Player E [CB] got good assistance, and was in decent position.
+Player X [FW] made good reception, Player E [CB] made weak tackle.
+Player X [FW] took control of the ball.
+Goal Attempt
+Player X [FW] made superb shot.
+Player Z [GK] was fooled.
+GOAL!

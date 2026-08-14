@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # lts/* always resolves to whatever Node's current LTS release is, rather than a
+          # version number pinned here that would silently go stale.
+          node-version: lts/*
+
+      # No package-lock.json — this project has zero runtime/dev dependencies (zero-build-
+      # step by design, see README), so there is nothing for `npm ci` to reproduce from a
+      # lockfile. Revisit this the moment an actual dependency is introduced: add a
+      # package-lock.json and switch to `npm ci` then, per this repo's own D8 convention.
+      - run: npm install
+
+      - run: npm test
+
+      - run: npm run check

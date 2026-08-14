@@ -434,7 +434,7 @@ function renderBaseFlow(edgeCounts, nodeCounts, side) {
     const {x, y} = pXY(pos, side);
     s.push(`<circle cx="${x}" cy="${y}" r="${NODE_R+2}" fill="${col}" opacity=".08"/>`);
     s.push(`<circle cx="${x}" cy="${y}" r="${NODE_R}" fill="#060d18" stroke="${col}" stroke-width="1.5" opacity=".8"/>`);
-    s.push(`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="8" font-family="monospace" opacity=".9">${pos}</text>`);
+    s.push(`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="8" font-family="monospace" opacity=".9">${escapeHtml(pos)}</text>`);
   });
 
   return s.join('');
@@ -475,10 +475,14 @@ function gLine(x1,y1,x2,y2,col,label,pct=.5,dashed=false) {
   return s.join('');
 }
 
+// pos/atkPos/defPos are position codes (parser.js only ever captures them via a
+// \[([A-Z]+)\] narrative regex, so today they can't contain HTML metacharacters) — escaped
+// anyway (D6, Phase D security audit) so this stays safe even if a future parser change
+// ever loosens that constraint, rather than relying solely on an upstream regex forever.
 function playerNode(x,y,pos,col,outline=false) {
   return [
     `<circle cx="${x}" cy="${y}" r="12" fill="#060d18" stroke="${col}" stroke-width="${outline?2:1.5}" opacity="${outline?1:.8}"/>`,
-    `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="8" font-family="monospace" font-weight="bold">${pos||'?'}</text>`,
+    `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="8" font-family="monospace" font-weight="bold">${escapeHtml(pos)||'?'}</text>`,
   ].join('');
 }
 
@@ -492,8 +496,8 @@ function duelNode(x,y,atkCol,defCol,outcome,atkPos,defPos) {
     `<circle cx="${x}" cy="${y}" r="13" fill="#060d18" stroke="${ring}" stroke-width="2" opacity=".9"/>`,
     `<path d="M${x} ${y-13} A13 13 0 0 1 ${x} ${y+13}" fill="${atkCol}" opacity=".25"/>`,
     `<path d="M${x} ${y-13} A13 13 0 0 0 ${x} ${y+13}" fill="${defCol}" opacity=".25"/>`,
-    `<text x="${x-6}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${atkCol}" font-size="7" font-family="monospace" font-weight="bold">${atkPos||'?'}</text>`,
-    `<text x="${x+6}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${defCol}" font-size="7" font-family="monospace" font-weight="bold">${defPos||'?'}</text>`,
+    `<text x="${x-6}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${atkCol}" font-size="7" font-family="monospace" font-weight="bold">${escapeHtml(atkPos)||'?'}</text>`,
+    `<text x="${x+6}" y="${y}" text-anchor="middle" dominant-baseline="central" fill="${defCol}" font-size="7" font-family="monospace" font-weight="bold">${escapeHtml(defPos)||'?'}</text>`,
   ].join('');
 }
 
@@ -1604,32 +1608,38 @@ function renderSquadTab(match) {
 
 function fmtDelta(n) { return n == null ? '—' : (n >= 0 ? '+' : '') + n; }
 
-function renderPhaseComparisonCard(match, side, phase, idx, col) {
-  const period = phase.endMinute != null ? `${phase.startMinute}–${phase.endMinute}'` : `${phase.startMinute}'+`;
-  const delta = idx > 0 ? compareAdjacentPhases(match, side, phase.phaseId) : null;
-  const deltaLine = delta
-    ? `<div class="qt-hint">Δ vs previous phase: opportunities ${fmtDelta(delta.delta.ownOpportunities)}, shots ${fmtDelta(delta.delta.ownShots)}, shots conceded ${fmtDelta(delta.delta.opponentShots)}</div>`
+// D13 (Phase D performance): takes the already-computed `perf` array and the index into
+// it, rather than calling analytics.js's compareAdjacentPhases(match, side, phaseId) —
+// that function independently re-runs phasePerformance() (which itself re-runs
+// turnoverAnalysis() over every opportunity) from scratch on every call. Called once per
+// phase card, that turned "compute phasePerformance for this side" into an O(phases)
+// repeat of the same whole-match computation for no different result — the delta here is
+// simple subtraction over two rows analytics.js already handed back once.
+function renderPhaseComparisonCard(perfRow, prevPerfRow, col) {
+  const period = perfRow.endMinute != null ? `${perfRow.startMinute}–${perfRow.endMinute}'` : `${perfRow.startMinute}'+`;
+  const deltaLine = prevPerfRow
+    ? `<div class="qt-hint">Δ vs previous phase: opportunities ${fmtDelta(perfRow.ownOpportunities - prevPerfRow.ownOpportunities)}, shots ${fmtDelta(perfRow.ownShots - prevPerfRow.ownShots)}, shots conceded ${fmtDelta(perfRow.opponentShots - prevPerfRow.opponentShots)}</div>`
     : '';
-  const degradedTag = phase.confidence === 'degraded' ? ' · <span title="Telemetry alignment is degraded for part of this match">⚠ degraded</span>' : '';
+  const degradedTag = perfRow.confidence === 'degraded' ? ' · <span title="Telemetry alignment is degraded for part of this match">⚠ degraded</span>' : '';
   return `<div style="margin-bottom:8px;padding:6px 8px;border-left:2px solid ${col};background:#0d1526">
     <div style="font-size:11px;color:${col};font-weight:700">${escapeHtml(period)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:11px;margin:4px 0">
-      <span>Opportunities: <b>${phase.ownOpportunities}</b> / ${phase.opponentOpportunities}</span>
-      <span>PB entries: <b>${phase.ownPBEntries}</b> / ${phase.opponentPBEntries}</span>
-      <span>Shots: <b>${phase.ownShots}</b> / ${phase.opponentShots}</span>
-      <span>Goals: <b>${phase.ownGoals}</b> / ${phase.opponentGoals}</span>
+      <span>Opportunities: <b>${perfRow.ownOpportunities}</b> / ${perfRow.opponentOpportunities}</span>
+      <span>PB entries: <b>${perfRow.ownPBEntries}</b> / ${perfRow.opponentPBEntries}</span>
+      <span>Shots: <b>${perfRow.ownShots}</b> / ${perfRow.opponentShots}</span>
+      <span>Goals: <b>${perfRow.ownGoals}</b> / ${perfRow.opponentGoals}</span>
     </div>
-    <div class="qt-hint">${phase.sampleSize} opportunit${phase.sampleSize===1?'y':'ies'} in this phase — ${phase.confidenceHint}${degradedTag}</div>
+    <div class="qt-hint">${perfRow.sampleSize} opportunit${perfRow.sampleSize===1?'y':'ies'} in this phase — ${perfRow.confidenceHint}${degradedTag}</div>
     ${deltaLine}
   </div>`;
 }
 
 function renderPhaseComparisonSection(match, side, col) {
-  const perf = phasePerformance(match, side);
+  const perf = phasePerformance(match, side); // computed once, reused for every card below
   if (!perf.length) return '';
   return `<div class="dist-title">Tactical Phase Comparison (${perf.length})</div>` +
     `<div class="qt-hint">Own / Opponent counts per material tactical-state phase (see the Squad tab for what changed at each boundary). The Δ line is a neutral numeric comparison against the previous phase, not a verdict on whether the change helped.</div>` +
-    perf.map((p, i) => renderPhaseComparisonCard(match, side, p, i, col)).join('');
+    perf.map((p, i) => renderPhaseComparisonCard(p, i > 0 ? perf[i - 1] : null, col)).join('');
 }
 
 function renderFunnelSection(match) {
@@ -1755,14 +1765,15 @@ function showErrors(errors, warnings) {
 // the goal whose target is the scorer (the pass that actually put them through), which
 // covers the normal case (PB_PASS/SP_PASS/FK_PASS/START_PASS → shot) and naturally comes
 // back null for solo efforts (dribble from deep, direct free kick) where no such pass exists.
-const PASS_STEP_TYPES = ['START_PASS','PB_PASS','SP_PASS','FK_PASS'];
+// (Reuses PASS_STEP_TYPES_FOR_STATS, defined above with buildFWDelivery — Phase D found
+// this was declared a second time here with an identical value; consolidated to one.)
 function findAssist(opp, goalStep) {
   const shooterName = goalStep.shooter?.name;
   if (!shooterName) return null;
   let assist = null;
   for (const s of opp.steps) {
     if (s === goalStep) break;
-    if (PASS_STEP_TYPES.includes(s.stepType) && s.to?.name === shooterName) assist = s.from;
+    if (PASS_STEP_TYPES_FOR_STATS.includes(s.stepType) && s.to?.name === shooterName) assist = s.from;
   }
   return assist;
 }
@@ -1828,6 +1839,21 @@ function renderScorersRow(scorers) {
   return html;
 }
 
+// D14 (Phase D, error isolation): runs an optional secondary panel's render function and
+// writes its HTML into the given panel element — but if it throws, the panel shows a
+// small, clearly-labeled, escaped error message instead of taking the rest of render()
+// down with it. Never silent: the real error still goes to console.error for debugging.
+function renderPanelSafely(panelId, label, renderFn) {
+  const el = $(panelId);
+  try {
+    const html = renderFn();
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    console.error(`${label} panel render error`, e);
+    if (el) el.innerHTML = `<div class="err-banner">${escapeHtml(label)} unavailable: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 function render(scrape) {
   // Parse first so we have final score for the header + any parse warnings
   _match = null;
@@ -1884,13 +1910,21 @@ function render(scrape) {
   }
 
   const { opportunities } = _match;
+  // D14 (Phase D, error isolation): Opportunities is core — if this throws, something is
+  // seriously wrong with the just-parsed match, not with one optional panel, so it's
+  // allowed to propagate rather than being isolated away like the panels below.
   renderOppSummaryAndList();
 
-  // Stats
-  $('panel-stats').innerHTML = renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities);
-  $('panel-phases').innerHTML = renderPhaseStats(_match);
-  $('panel-squad').innerHTML = renderSquadTab(_match);
-  $('panel-analysis').innerHTML = renderAnalysisTab(_match);
+  // Stats / fixed-window Phases / Squad / Analysis are independent secondary panels — a
+  // bug in any ONE of them (most likely Analysis, the newest and most complex) must not
+  // blank out the others or stop the pitch from building below. Each gets its own
+  // try/catch and degrades to a locally-scoped, escaped error message in its own panel
+  // rather than either crashing the whole viewer or silently swallowing the exception
+  // (still logged via console.error either way).
+  renderPanelSafely('panel-stats', 'Statistics', () => renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities));
+  renderPanelSafely('panel-phases', 'Phases', () => renderPhaseStats(_match));
+  renderPanelSafely('panel-squad', 'Squad', () => renderSquadTab(_match));
+  renderPanelSafely('panel-analysis', 'Analysis', () => renderAnalysisTab(_match));
 
   // Pitch — rebuild entire SVG as one string (SVG namespace safe)
   try {

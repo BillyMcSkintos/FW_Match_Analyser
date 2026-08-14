@@ -1,0 +1,7 @@
+50' - H - O_SP_START
+50' - H - V_PASS - (60)
+50' - A - V_ASSISTANCE - (40)
+50' - H - V_RECEPTION - (55)
+50' - A - V_TACKLING - (35)
+50' - H - V_SHOT - (45)
+50' - A - V_REFLEX - (30)

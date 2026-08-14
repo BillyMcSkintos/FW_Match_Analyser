@@ -406,3 +406,202 @@ test('renderAnalysisTab escapes malicious player/team names in the defensive bre
   const html = ctx.renderAnalysisTab(match);
   assert.ok(!html.includes('<script>evil()'), 'raw tag must not survive into the rendered breakdown');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase D (D1/D7) — cross-file duplication drift check
+// ─────────────────────────────────────────────────────────────────────────────
+// viewer.js's own pitch-layout lane() and analytics.js's laneOf() are independent
+// position→lane implementations (analytics.js must not depend on viewer.js's DOM-mixed
+// code — see analytics.js's own module comment) that happen to encode the same
+// left/center/right convention. Rather than force a risky shared-require refactor across
+// the classic-script boundary that already caused one real collision this phase, this
+// test directly enforces the invariant that actually matters: the two must never
+// silently diverge. If this ever fails, update whichever of LANE_MAP (viewer.js) /
+// POSITION_LANE_MAP (analytics.js) is stale.
+
+test('viewer.js\'s lane() and analytics.js\'s laneOf() agree for every FinalWhistle position', () => {
+  const ctx = loadViewerContext();
+  const positions = ['GK', 'LB', 'CB', 'RB', 'LWB', 'DM', 'RWB', 'LM', 'CM', 'RM', 'LW', 'OM', 'RW', 'FW'];
+  for (const pos of positions) {
+    assert.equal(ctx.lane(pos), ctx.laneOf(pos), `lane('${pos}') and laneOf('${pos}') disagree`);
+  }
+  // Also confirm both fall back to 'center' identically for an unrecognized position.
+  assert.equal(ctx.lane('XX'), ctx.laneOf('XX'));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase D (D6) — innerHTML security audit: payload-shaped strings, end-to-end
+// ─────────────────────────────────────────────────────────────────────────────
+// These check RENDERED OUTPUT is escaped, not just that escapeHtml() behaves correctly
+// in isolation — each payload is pushed through a genuine data path a real scrape could
+// carry it through (a player name, a team name, a scraped stat label), into the actual
+// render function a real match uses, per D6's explicit "not merely that escapeHtml()
+// works in isolation" requirement.
+
+const XSS_SCRIPT = '<script>alert(1)</script>';
+const XSS_IMG = '"><img src=x onerror=alert(1)>';
+const XSS_SVG_BREAKOUT = '</span><svg onload=alert(1)>';
+
+test('renderOppList escapes a script-tag payload in a player name reached via the opportunity list', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 10',
+    `Opportunity for Home Team.`,
+    'Midfield',
+    `${XSS_SCRIPT} [RB] attempted low good pass to Player B [CM]`,
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (30)", "10' - A - V_ASSISTANCE - (40)",
+    "10' - H - V_RECEPTION - (25)", "10' - A - V_TACKLING - (70)",
+  ].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderOppList(match);
+  assert.ok(!html.includes('<script>alert(1)</script>'), 'raw <script> must not reach renderOppList output');
+});
+
+test('meta header escapes an "><img onerror=...> payload in a team name', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 10',
+    `Opportunity for ${XSS_IMG}.`,
+    'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (30)", "10' - A - V_ASSISTANCE - (40)",
+    "10' - H - V_RECEPTION - (25)", "10' - A - V_TACKLING - (70)",
+  ].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: XSS_IMG, awayTeam: 'Away Team' });
+  const scorersHtml = ctx.renderScorersRow(ctx.buildScorers(match));
+  const passSummaryHtml = ctx.buildPassSummary(match.opportunities[0]);
+  assert.ok(!scorersHtml.includes('onerror=alert(1)>'), 'scorers row must not carry a live onerror handler');
+  assert.ok(!passSummaryHtml.includes('onerror=alert(1)>'), 'pass summary (team name row) must not carry a live onerror handler');
+});
+
+test('the stats panel escapes an </span><svg onload=...> breakout payload in a scraped stat label', () => {
+  const ctx = loadViewerContext();
+  const stats = { [XSS_SVG_BREAKOUT]: { home: '58%', away: '42%' } };
+  const html = ctx.renderStats(stats, 'Home Team', 'Away Team', []);
+  assert.ok(!html.includes('<svg onload=alert(1)>'), 'raw breakout markup must not reach the stats panel');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase D (D11/D12) — backward compatibility with old chrome.storage.local scrape objects
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase A–C added fields to the FRESHLY-COMPUTED match model (validation, sequence,
+// tacticalContext, tactical phases) — none of those were ever part of what gets
+// PERSISTED to chrome.storage.local (the persisted shape is scraper.js's own
+// {narrative, telemetry, homeTeam, awayTeam, statistics, errors, warnings, scrapedAt}
+// output; parseMatch() rebuilds the whole match model fresh from stored narrative/
+// telemetry text on every load). These tests still exist because that's an invariant
+// worth protecting explicitly, not just an accident of the current implementation.
+
+test('render() does not throw on a minimal pre-Phase-A scrape object with no errors/warnings/statistics/scrapedAt', () => {
+  const ctx = loadViewerContext();
+  const oldScrape = {
+    narrative: [
+      'Minute 10', 'Opportunity for Home Team.', 'Midfield',
+      'Player A [RB] attempted low good pass to Player B [CM]',
+      'Player C [DM] got decent assistance, and was in decent position.',
+      'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+      'Player C [DM] cleared the ball to safety.',
+    ].join('\n'),
+    telemetry: null,
+    homeTeam: 'Home Team',
+    awayTeam: 'Away Team',
+    // Deliberately no errors/warnings/statistics/ok/scrapedAt/schemaVersion fields.
+  };
+  assert.doesNotThrow(() => ctx.render(oldScrape));
+});
+
+test('render() does not throw on a completely empty stored object', () => {
+  const ctx = loadViewerContext();
+  assert.doesNotThrow(() => ctx.render({}));
+});
+
+test('render() does not throw on malformed narrative text that never resolves an opportunity', () => {
+  const ctx = loadViewerContext();
+  assert.doesNotThrow(() => ctx.render({ narrative: 'this is not really a FinalWhistle report at all' }));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase D (D14) — per-panel error isolation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// loadViewerContext()'s stub document.getElementById returns a fresh throwaway element
+// on every call, which is fine for tests that only check a render FUNCTION's return
+// value — but this test needs to verify what render() actually WROTE into specific
+// panels by id, so it needs the same element object back on every $('panel-x') call.
+function loadViewerContextWithStableElements() {
+  const src = fs.readFileSync(path.join(__dirname, 'viewer.js'), 'utf8');
+  const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
+  const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
+  const elements = new Map();
+  const getEl = (id) => {
+    if (!elements.has(id)) elements.set(id, makeStubElement());
+    return elements.get(id);
+  };
+  const sandbox = {
+    console,
+    document: {
+      getElementById: getEl,
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      addEventListener() {},
+      createElement() { return makeStubElement(); },
+    },
+    chrome: {
+      storage: { local: { get(_k, cb) { if (cb) cb({}); }, set() {}, remove() {} } },
+      runtime: { getURL: p => 'chrome-extension://test/' + p, sendMessage: async () => ({}) },
+      tabs: { query: async () => [] },
+    },
+    location: { search: '' },
+    URLSearchParams,
+  };
+  const context = vm.createContext(sandbox);
+  vm.runInContext(parserSrc, context, { filename: 'parser.js' });
+  vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
+  vm.runInContext(src, context, { filename: 'viewer.js' });
+  return { context, elements };
+}
+
+test('a throwing Analysis panel degrades locally and does not blank out Stats/Squad/Pitch', () => {
+  const { context: ctx, elements } = loadViewerContextWithStableElements();
+  const narrative = [
+    'Minute 10', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (30)", "10' - A - V_ASSISTANCE - (40)",
+    "10' - H - V_RECEPTION - (25)", "10' - A - V_TACKLING - (70)",
+  ].join('\n');
+
+  // Simulate a genuine bug in renderAnalysisTab — any exception, not a data problem.
+  ctx.renderAnalysisTab = () => { throw new Error('boom'); };
+
+  assert.doesNotThrow(() => ctx.render({ narrative, telemetry, homeTeam: 'Home Team', awayTeam: 'Away Team' }));
+
+  const analysisHtml = elements.get('panel-analysis').innerHTML;
+  assert.ok(analysisHtml.includes('Analysis unavailable'), 'the failing panel should show a local, labeled message');
+  assert.ok(analysisHtml.includes('boom'), 'the actual error message should be visible (escaped), not swallowed');
+
+  // Stats/Squad must still have rendered normally — the Analysis failure must not have
+  // stopped render() from reaching them.
+  const statsHtml = elements.get('panel-stats').innerHTML;
+  const squadHtml = elements.get('panel-squad').innerHTML;
+  assert.ok(statsHtml && !statsHtml.includes('unavailable'), 'Stats panel must render normally');
+  assert.ok(squadHtml && squadHtml.includes('Tactical Phases'), 'Squad panel must render normally');
+
+  // Opportunities list is core, not one of the isolated panels — it must also still work.
+  const oppListHtml = elements.get('opp-list').innerHTML;
+  assert.ok(oppListHtml.includes('opp-row'), 'the opportunity list must still have rendered');
+});

@@ -1,0 +1,4 @@
+30' - H - O_FK_START
+30' - H - V_SHOT - (70)
+30' - A - V_REFLEX - (15)
+30' - H - E_GOAL

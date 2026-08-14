@@ -1,0 +1,23 @@
+Minute 10
+Opportunity for Home Team.
+Midfield
+Player A [RB] attempted low good pass to Player B [CM]
+Player C [CM] got weak assistance, and was close.
+Player B [CM] made superb reception and took control of the ball.
+Penalty Box
+Player B [CM] attempted low decent pass to Player D [FW]
+Player E [CB] got good assistance, and was in decent position.
+Player D [FW] made good reception, Player E [CB] made weak tackle.
+Player D [FW] took control of the ball.
+Goal Attempt
+Player D [FW] made superb shot.
+Player F [GK] was fooled.
+GOAL!
+[1-0]
+Minute 20
+Opportunity for Away Team.
+Midfield
+Player X [LB] attempted low weak pass to Player Y [CM]
+Player Z [DM] got decent assistance, and was in decent position.
+Player Y [CM] made weak reception, Player Z [DM] made superb tackle.
+Player Z [DM] cleared the ball to safety.

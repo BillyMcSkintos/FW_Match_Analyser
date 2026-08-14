@@ -1,0 +1,16 @@
+10' - H - O_MID_START
+10' - H - V_PASS - (65)
+10' - A - V_ASSISTANCE - (30)
+10' - H - V_RECEPTION - (75)
+10' - H - V_PASS - (55)
+10' - A - V_ASSISTANCE - (60)
+10' - H - V_RECEPTION - (65)
+10' - A - V_TACKLING - (35)
+10' - H - V_SHOT - (80)
+10' - A - V_REFLEX - (20)
+10' - H - E_GOAL
+20' - A - O_MID_START
+20' - A - V_PASS - (30)
+20' - H - V_ASSISTANCE - (40)
+20' - A - V_RECEPTION - (25)
+20' - H - V_TACKLING - (70)

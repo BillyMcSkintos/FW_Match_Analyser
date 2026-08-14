@@ -1,0 +1,10 @@
+10' - H - O_MID_START
+10' - H - V_PASS - (30)
+10' - A - V_ASSISTANCE - (40)
+10' - H - V_RECEPTION - (25)
+10' - A - V_TACKLING - (70)
+70' - H - O_MID_START
+70' - H - V_PASS - (30)
+70' - A - V_ASSISTANCE - (40)
+70' - H - V_RECEPTION - (25)
+70' - A - V_TACKLING - (70)

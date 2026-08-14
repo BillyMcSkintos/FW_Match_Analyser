@@ -1,0 +1,15 @@
+70' - H - O_MID_START
+70' - H - V_PASS - (60)
+70' - A - V_ASSISTANCE - (30)
+70' - H - V_RECEPTION - (70)
+70' - A - E_COUNTER_ATTACK
+70' - A - V_PASS - (55)
+70' - H - V_ASSISTANCE - (35)
+70' - A - V_RECEPTION - (65)
+70' - A - V_PASS - (50)
+70' - H - V_ASSISTANCE - (40)
+70' - A - V_RECEPTION - (60)
+70' - H - V_TACKLING - (35)
+70' - A - V_SHOT - (75)
+70' - H - V_REFLEX - (25)
+70' - A - E_GOAL

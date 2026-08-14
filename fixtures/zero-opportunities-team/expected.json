@@ -1,0 +1,16 @@
+{
+  "opportunities": 1,
+  "homeOpportunities": 1,
+  "awayOpportunities": 0,
+  "homeShots": 0,
+  "awayShots": 0,
+  "homeGoals": 0,
+  "awayGoals": 0,
+  "counterAttacksCreatedHome": 0,
+  "counterAttacksCreatedAway": 0,
+  "tacticalEventCount": 1,
+  "homeTacticalPhases": 1,
+  "awayTacticalPhases": 2,
+  "validationConfidence": "exact",
+  "warnings": 0
+}

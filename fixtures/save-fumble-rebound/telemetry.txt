@@ -1,0 +1,15 @@
+40' - H - O_PB_START
+40' - H - V_PASS - (55)
+40' - A - V_ASSISTANCE - (35)
+40' - H - V_RECEPTION - (60)
+40' - A - V_TACKLING - (30)
+40' - H - V_SHOT - (65)
+40' - A - V_REFLEX - (70)
+40' - A - E_FUMBLE
+40' - H - V_PASS - (50)
+40' - A - V_ASSISTANCE - (40)
+40' - H - V_RECEPTION - (55)
+40' - A - V_TACKLING - (35)
+40' - H - V_SHOT - (70)
+40' - A - V_REFLEX - (20)
+40' - H - E_GOAL

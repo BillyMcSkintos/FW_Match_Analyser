@@ -1,3 +1,5 @@
+'use strict';
+
 /**
  * FinalWhistle page scraper
  *
