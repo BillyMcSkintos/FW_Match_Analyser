@@ -19,6 +19,9 @@ button{font-size:13px;padding:4px 10px;border:1px solid #2a3a5a;background:trans
 button:hover{background:#1a2540;color:#e4e9f5}
 button.primary{background:#6fb3d922;border-color:#6fb3d966;color:#6fb3d9}
 button.primary:hover{background:#6fb3d933}
+button:disabled{opacity:.4;cursor:default;background:transparent}
+select{font-size:13px;padding:4px 6px;border:1px solid #2a3a5a;background:#060d18;color:#9fb0c4;border-radius:3px}
+select:disabled{opacity:.4}
 .status{font-size:12px;color:#8a9ab0}
 
 /* ── Banners ── */
@@ -183,6 +186,12 @@ button.primary:hover{background:#6fb3d933}
       <button id="btn-load">Load</button>
       <button id="btn-clear" style="color:#e05050">Clear</button>
       <button id="btn-new-tab" title="Open FinalWhistle and a blank analyser tab so you can scrape a different match to compare">New Tab</button>
+      <select id="export-scope" title="What to include in the JPG export" disabled>
+        <option value="full-view">Full view</option>
+        <option value="possession" id="export-possession-option" disabled>Pinned possession</option>
+        <option value="overview">Overview</option>
+      </select>
+      <button id="btn-save-jpg" title="Save the current view as a local JPG — nothing is uploaded" disabled>Save JPG</button>
     </div>
     <div id="errors"></div>
     <div class="tabs" id="tabs" style="display:none">

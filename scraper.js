@@ -20,6 +20,26 @@
 const DEBUG = false;
 function debug(...args) { if (DEBUG) console.debug('[FW Analyser]', ...args); }
 
+// Reviewed against a fork's independent hardening pass, which validated the scraped
+// page's own URL before trusting anything scraped from it. Deliberately narrower than
+// that fork's version: this only asserts what host_permissions (`https://*.finalwhistle.
+// org/*`) already restricts network access to — protocol, hostname (including
+// subdomains, matching that same wildcard pattern), and no embedded port/credentials.
+// It does NOT assert an exact match-report path shape (e.g. a fixed /en/match/<uuid>
+// pattern) — this project has no confirmed evidence FinalWhistle's path is always that
+// shape, and guessing one here would risk rejecting a legitimate scrape on an unverified
+// assumption, the same "don't fabricate structure that isn't actually confirmed"
+// discipline the parser applies to narrative wording.
+function canonicalMatchUrl(value) {
+  if (typeof value !== 'string' || value.length > 2000) return null;
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (url.protocol !== 'https:') return null;
+  if (url.hostname !== 'finalwhistle.org' && !url.hostname.endsWith('.finalwhistle.org')) return null;
+  if (url.port || url.username || url.password) return null;
+  return url.href;
+}
+
 function fwScrape() {
   const result = {
     ok: false,
@@ -33,6 +53,18 @@ function fwScrape() {
     url: location.href,
     scrapedAt: Date.now(),
   };
+
+  // Fatal, checked first: everything else this function does only makes sense against a
+  // genuine FinalWhistle page. scraper.js should only ever run injected into one (gated
+  // by host_permissions), so this should never actually fire in practice — it exists as
+  // an explicit, visible guard rather than silently trusting location.href, in case a
+  // future change ever injects this script somewhere unexpected.
+  const canonicalUrl = canonicalMatchUrl(result.url);
+  if (!canonicalUrl) {
+    result.errors.push('WRONG_PAGE: this does not look like a finalwhistle.org page URL.');
+    return result;
+  }
+  result.url = canonicalUrl;
 
   // Report FF button miss from async step
   if (window._fwFfMissed !== undefined) {

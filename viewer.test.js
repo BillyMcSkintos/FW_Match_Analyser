@@ -605,3 +605,147 @@ test('a throwing Analysis panel degrades locally and does not blank out Stats/Sq
   const oppListHtml = elements.get('opp-list').innerHTML;
   assert.ok(oppListHtml.includes('opp-row'), 'the opportunity list must still have rendered');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORT — JPG SNAPSHOT
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('escapeXmlText strips XML 1.0-invalid code points and escapes every delimiter', () => {
+  const ctx = loadViewerContext();
+  assert.equal(ctx.escapeXmlText(`<tag> & "quoted" 'apos'`), '&lt;tag&gt; &amp; &quot;quoted&quot; &apos;apos&apos;');
+  // \x00 (a raw control character) is not a valid XML 1.0 character at all — an SVG
+  // parser can choke on it even though it'd pass right through escapeHtml() for HTML.
+  assert.equal(ctx.escapeXmlText('a\x00b'), 'ab');
+  assert.equal(ctx.escapeXmlText(null), '');
+  assert.equal(ctx.escapeXmlText(undefined), '');
+});
+
+test('truncateDisplay caps at maxChars (ellipsis included) and never exceeds the hard ceiling', () => {
+  const ctx = loadViewerContext();
+  assert.equal(ctx.truncateDisplay('hello', 10), 'hello');
+  assert.equal(ctx.truncateDisplay('hello world', 8), 'hello w…');
+  // EXPORT_MAX_DISPLAY_CHARS is a top-level `const` in viewer.js, so (unlike its function
+  // declarations) it never attaches to the sandbox object as ctx.EXPORT_MAX_DISPLAY_CHARS
+  // — read it via runInContext instead (same gotcha as background.test.js's SCRAPE_LIMITS).
+  const maxDisplayChars = vm.runInContext('EXPORT_MAX_DISPLAY_CHARS', ctx);
+  assert.equal(ctx.truncateDisplay('x'.repeat(500), 500).length, maxDisplayChars, 'a huge maxChars request is still capped at the hard ceiling');
+  assert.equal(ctx.truncateDisplay('hi', -1), '');
+});
+
+test('buildExportFilename extracts a match id from a /match/<id> URL and falls back to a timestamp otherwise', () => {
+  const ctx = loadViewerContext();
+  assert.equal(
+    ctx.buildExportFilename('https://www.finalwhistle.org/en/match/abc-123/', 'full-view', 1700000000000),
+    'finalwhistle-match-abc-123-full-view.jpg',
+  );
+  assert.equal(
+    ctx.buildExportFilename('https://www.finalwhistle.org/en/match/abc-123', 'overview', 1700000000000),
+    'finalwhistle-match-abc-123-overview.jpg',
+  );
+  assert.equal(
+    ctx.buildExportFilename('https://www.finalwhistle.org/en/match/abc-123', 'possession', 1700000000000, 0),
+    'finalwhistle-match-abc-123-possession-001.jpg',
+  );
+  // A URL that doesn't loosely match the /match/ convention (or no URL at all) must
+  // still produce a usable filename rather than throwing — graceful degradation, not
+  // the fork's INVALID_MATCH_URL rejection.
+  assert.equal(
+    ctx.buildExportFilename('not a url', 'full-view', 1700000000000),
+    'finalwhistle-match-unknown-1700000000000-full-view.jpg',
+  );
+  assert.equal(
+    ctx.buildExportFilename(undefined, 'full-view', undefined).startsWith('finalwhistle-match-unknown-'),
+    true,
+  );
+  // An out-of-range/missing possessionIndex on a 'possession' scope degrades to the
+  // full-view filename shape rather than throwing.
+  assert.equal(
+    ctx.buildExportFilename('https://www.finalwhistle.org/en/match/abc-123', 'possession', 1700000000000, null),
+    'finalwhistle-match-abc-123-full-view.jpg',
+  );
+});
+
+// Same narrative/telemetry as "a throwing Analysis panel..." above — already proven to
+// parse into a single clean opportunity and render every panel without error, so export
+// tests exercise real _match/_hFlowData/_aFlowData state instead of a one-off fixture.
+function renderSampleMatch(ctx, overrides = {}) {
+  const narrative = [
+    'Minute 10', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (30)", "10' - A - V_ASSISTANCE - (40)",
+    "10' - H - V_RECEPTION - (25)", "10' - A - V_TACKLING - (70)",
+  ].join('\n');
+  ctx.render({
+    narrative, telemetry, homeTeam: 'Home Team', awayTeam: 'Away Team',
+    url: 'https://www.finalwhistle.org/en/match/sample-uuid/', scrapedAt: 1700000000000,
+    ...overrides,
+  });
+}
+
+function assertWellFormedExportSvg(svg, width, height) {
+  assert.ok(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg"'));
+  assert.ok(svg.includes(`width="${width}"`));
+  assert.ok(svg.includes(`height="${height}"`));
+  assert.ok(svg.endsWith('</svg>'));
+  assert.equal(/<(?:foreignObject|image)\b/i.test(svg), false, 'export SVG must never embed a raster image or foreignObject');
+  assert.equal(/<(?!svg\b)[^>]+\b(?:xlink:)?href\s*=/i.test(svg), false, 'export SVG must never reference an external resource via href');
+}
+
+test('buildExportSvg throws NO_EXPORTABLE_MATCH before anything has been scraped', () => {
+  const ctx = loadViewerContext();
+  assert.throws(() => ctx.buildExportSvg('full-view'), /NO_EXPORTABLE_MATCH/);
+});
+
+test('buildExportSvg("possession") throws NO_PINNED_POSSESSION when nothing is pinned', () => {
+  const ctx = loadViewerContext();
+  renderSampleMatch(ctx);
+  ctx.getPinnedIdx = () => null;
+  assert.throws(() => ctx.buildExportSvg('possession'), /NO_PINNED_POSSESSION/);
+});
+
+test('buildExportSvg builds a well-formed, self-contained SVG for each of the 3 scopes', () => {
+  const ctx = loadViewerContext();
+  renderSampleMatch(ctx);
+  ctx.getPinnedIdx = () => 0; // pin the only opportunity
+
+  const fullView = ctx.buildExportSvg('full-view');
+  assertWellFormedExportSvg(fullView, 1920, 1080);
+  assert.ok(fullView.includes('Away Team'), 'team names should appear in the full-view export');
+  assert.ok(fullView.includes('PINNED POSSESSION 1'), 'the pinned possession should be labeled 1-based');
+
+  const possession = ctx.buildExportSvg('possession');
+  assertWellFormedExportSvg(possession, 1600, 1200);
+  assert.ok(possession.includes('PINNED POSSESSION'));
+
+  const overview = ctx.buildExportSvg('overview');
+  assertWellFormedExportSvg(overview, 1600, 1200);
+  assert.ok(overview.includes('MATCH OVERVIEW'));
+  assert.ok(overview.includes('Whole-match overview'));
+});
+
+test('buildExportSvg escapes a malicious team name instead of injecting it into the SVG', () => {
+  const ctx = loadViewerContext();
+  renderSampleMatch(ctx);
+  ctx.getPinnedIdx = () => null;
+  // Mutate the already-parsed match's team name directly, the same way a hostile
+  // FinalWhistle page's own team-name element could reach this data — exercises the
+  // export SVG's escaping path without relying on the parser's own team-name matching.
+  // _match is a top-level `let` in viewer.js, so (like SCRAPE_LIMITS in
+  // background.test.js) it never attaches to the sandbox as ctx._match — read the live
+  // object reference via runInContext instead, then mutate it in place.
+  vm.runInContext('_match', ctx).meta.homeTeam = `Evil"/><script>alert(1)</script>`;
+  const svg = ctx.buildExportSvg('overview');
+  assert.equal(svg.includes('<script>'), false, 'the raw tag must not survive escaping into the export SVG');
+  assert.ok(svg.includes('&lt;script&gt;'), 'it should appear escaped instead');
+});
+
+test('createExportJpeg and saveJpg exist as functions — actual canvas/Image rasterization is browser-only and is verified manually, not in Node', () => {
+  const ctx = loadViewerContext();
+  assert.equal(typeof ctx.createExportJpeg, 'function');
+  assert.equal(typeof ctx.saveJpg, 'function');
+});

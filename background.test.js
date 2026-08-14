@@ -1,0 +1,224 @@
+'use strict';
+// Regression tests for background.js's pure/testable logic. background.js is a service
+// worker (not a CommonJS module), so it's loaded via node:vm into a minimal stub context,
+// matching the pattern already used for scraper.js/viewer.js.
+//
+// Run with:  node --test background.test.js
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const EXTENSION_ID = 'abcdefghijklmnopqrstuvwxyzabcdef';
+
+function loadBackgroundContext() {
+  const bgSrc = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+  const utilsSrc = fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8');
+  const sandbox = {
+    console,
+    URL,
+    // importScripts('utils.js') is a real service-worker API with no Node equivalent —
+    // utils.js is loaded directly into this same context below instead (mirroring what
+    // importScripts actually does: execute the file's code in the current global scope),
+    // so the call in background.js itself just needs to be a harmless no-op here.
+    importScripts() {},
+    chrome: {
+      runtime: {
+        id: EXTENSION_ID,
+        getURL(p) { return `chrome-extension://${EXTENSION_ID}/${p}`; },
+        onMessage: { addListener(fn) { sandbox._messageListener = fn; } },
+      },
+      action: { onClicked: { addListener() {} } },
+      tabs: { query: async () => [], update: async () => {}, create: async () => {} },
+      windows: { update: async () => {} },
+      scripting: { executeScript: async () => [{ result: null }] },
+      storage: { local: { set: async () => {} } },
+    },
+  };
+  const context = vm.createContext(sandbox);
+  vm.runInContext(utilsSrc, context, { filename: 'utils.js' });
+  vm.runInContext(bgSrc, context, { filename: 'background.js' });
+  return context;
+}
+
+function trustedSender(overrides = {}) {
+  return {
+    id: EXTENSION_ID,
+    tab: { id: 7 },
+    url: `chrome-extension://${EXTENSION_ID}/viewer.html`,
+    ...overrides,
+  };
+}
+
+test('isTrustedViewerSender accepts a message from the packaged viewer page', () => {
+  const ctx = loadBackgroundContext();
+  assert.equal(ctx.isTrustedViewerSender(trustedSender()), true);
+});
+
+test('isTrustedViewerSender rejects a different extension id, a non-tab sender, and a non-viewer path', () => {
+  const ctx = loadBackgroundContext();
+  assert.equal(ctx.isTrustedViewerSender(trustedSender({ id: 'someOtherExtensionId12345678901' })), false);
+  assert.equal(ctx.isTrustedViewerSender(trustedSender({ tab: undefined })), false, 'no tab.id (e.g. a devtools panel) must not pass');
+  assert.equal(ctx.isTrustedViewerSender(trustedSender({ url: `chrome-extension://${EXTENSION_ID}/background.js` })), false, 'not the viewer page');
+  assert.equal(ctx.isTrustedViewerSender(trustedSender({ url: 'https://evil.example.com/viewer.html' })), false, 'wrong protocol/origin entirely');
+  assert.equal(ctx.isTrustedViewerSender(null), false);
+  assert.equal(ctx.isTrustedViewerSender(undefined), false);
+});
+
+test('the SCRAPE_PAGE message listener rejects an untrusted sender without ever calling scrapeActiveTab', () => {
+  const ctx = loadBackgroundContext();
+  let scrapeActiveTabCalled = false;
+  ctx.scrapeActiveTab = async () => { scrapeActiveTabCalled = true; return { ok: true }; };
+
+  let responded = null;
+  const keepChannelOpen = ctx._messageListener(
+    { type: 'SCRAPE_PAGE' },
+    trustedSender({ id: 'wrongExtensionId1234567890123456' }),
+    (response) => { responded = response; },
+  );
+
+  assert.equal(scrapeActiveTabCalled, false, 'an untrusted sender must never trigger a scrape');
+  assert.equal(responded.ok, false);
+  assert.ok(responded.errors[0].includes('unexpected sender'));
+  // No async work was started for a rejected sender, so the listener should not keep the
+  // message channel open waiting for a later sendResponse call.
+  assert.notEqual(keepChannelOpen, true);
+});
+
+test('the SCRAPE_PAGE message listener proceeds normally for a trusted sender', async () => {
+  const ctx = loadBackgroundContext();
+  let scrapeActiveTabCalled = false;
+  ctx.scrapeActiveTab = async () => { scrapeActiveTabCalled = true; return { ok: true, narrative: 'x' }; };
+
+  let responded = null;
+  const keepChannelOpen = ctx._messageListener(
+    { type: 'SCRAPE_PAGE' },
+    trustedSender(),
+    (response) => { responded = response; },
+  );
+  assert.equal(keepChannelOpen, true, 'the real async path keeps the channel open for the later sendResponse');
+  await new Promise(r => setTimeout(r, 0)); // let the scrapeActiveTab().then(sendResponse) microtask settle
+  assert.equal(scrapeActiveTabCalled, true);
+  assert.equal(responded.ok, true);
+});
+
+// sanitizeScrapeResult guards against scraper.js's result: scraper.js runs injected into
+// FinalWhistle's own page, sharing that page's JS realm, so a compromised or just buggy
+// page could tamper with what comes back (including prototype pollution) before it's
+// trusted and stored. Per this project's graceful-degradation philosophy, only a
+// fundamentally hostile top-level shape is rejected outright (returns null) — anything
+// merely oversized-but-plausible is truncated with a warning instead of thrown away.
+
+function basicScrape(overrides = {}) {
+  return {
+    ok: true,
+    errors: [],
+    warnings: [],
+    narrative: 'Some narrative text.',
+    telemetry: 'Some telemetry text.',
+    statistics: { Possession: { home: '54%', away: '46%' } },
+    homeTeam: 'Home FC',
+    awayTeam: 'Away FC',
+    url: 'https://www.finalwhistle.org/en/match/abc',
+    scrapedAt: 1700000000000,
+    ...overrides,
+  };
+}
+
+// sanitizeScrapeResult's isPlainRecord check compares Object.getPrototypeOf(value)
+// against THIS vm context's own Object.prototype — a plain object literal built in the
+// outer Node realm (like basicScrape()'s return value) carries a DIFFERENT realm's
+// Object.prototype and would be (mis)treated as hostile. Round-tripping through the
+// context's own JSON reconstructs the object inside the right realm, matching what
+// actually happens in production (chrome.scripting.executeScript structured-clones its
+// result into background.js's own realm).
+//
+// Note: JSON/Object/etc. are reachable by bare identifier from CODE running inside a vm
+// context, but are not exposed as own properties of the sandbox object itself (so
+// ctx.JSON is undefined from the host side) — hence running the parse via
+// vm.runInContext rather than calling ctx.JSON.parse directly.
+function inRealm(ctx, value) {
+  const encoded = JSON.stringify(JSON.stringify(value));
+  return vm.runInContext(`JSON.parse(${encoded})`, ctx);
+}
+
+test('sanitizeScrapeResult passes a well-formed scrape through unchanged', () => {
+  const ctx = loadBackgroundContext();
+  const input = basicScrape();
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, input));
+  assert.equal(JSON.stringify(out), JSON.stringify(input));
+});
+
+test('sanitizeScrapeResult rejects a fundamentally hostile top-level shape', () => {
+  const ctx = loadBackgroundContext();
+  assert.equal(ctx.sanitizeScrapeResult(null), null);
+  assert.equal(ctx.sanitizeScrapeResult(undefined), null);
+  assert.equal(ctx.sanitizeScrapeResult('a string, not a record'), null);
+  assert.equal(ctx.sanitizeScrapeResult([1, 2, 3]), null, 'an array must not be treated as a record');
+  assert.equal(ctx.sanitizeScrapeResult(basicScrape({ narrative: 12345 })), null, 'narrative with the wrong type entirely is hostile, not just oversized');
+  assert.equal(ctx.sanitizeScrapeResult(basicScrape({ telemetry: {} })), null);
+
+  const polluted = Object.create({ evil: true });
+  Object.assign(polluted, basicScrape());
+  assert.equal(ctx.sanitizeScrapeResult(polluted), null, 'an object whose prototype was tampered with must be rejected');
+});
+
+test('sanitizeScrapeResult truncates oversized narrative/telemetry/team names and warns about it', () => {
+  const ctx = loadBackgroundContext();
+  // SCRAPE_LIMITS is a top-level `const` in background.js, so (unlike its function
+  // declarations) it never attaches to the sandbox object — read it via runInContext.
+  const limits = vm.runInContext('SCRAPE_LIMITS', ctx);
+  const longNarrative = 'x'.repeat(limits.narrativeChars + 500);
+  const longName = 'y'.repeat(limits.teamNameChars + 20);
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({ narrative: longNarrative, homeTeam: longName })));
+
+  assert.equal(out.narrative.length, limits.narrativeChars);
+  assert.equal(out.homeTeam.length, limits.teamNameChars);
+  assert.ok(out.warnings.some(w => w.includes('narrative')), 'a truncation warning must be surfaced, not silently applied');
+  assert.ok(out.warnings.some(w => w.includes('homeTeam')));
+});
+
+test('sanitizeScrapeResult drops a malformed statistics object to null instead of rejecting the whole scrape', () => {
+  const ctx = loadBackgroundContext();
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({ statistics: { Possession: { home: '54%' } } }))); // missing "away"
+  assert.equal(out.statistics, null);
+  assert.equal(out.narrative, 'Some narrative text.', 'the rest of the scrape must still come through');
+});
+
+test('sanitizeScrapeResult filters non-string entries out of errors/warnings and recomputes ok from the cleaned errors', () => {
+  const ctx = loadBackgroundContext();
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({
+    ok: true, // deliberately inconsistent with errors below, to prove ok is recomputed, not trusted
+    errors: ['REAL_ERROR', { injected: 'object' }, 42],
+  })));
+  assert.equal(JSON.stringify(out.errors), JSON.stringify(['REAL_ERROR']));
+  assert.equal(out.ok, false, 'ok must reflect the sanitized errors array, not the scraper-supplied flag');
+});
+
+test('runScraper() falls back to "No result from scraper" when the injected script returns a hostile shape', async () => {
+  const ctx = loadBackgroundContext();
+  ctx.chrome.scripting.executeScript = async () => [{ result: inRealm(ctx, ['not', 'a', 'record']) }];
+  let stored = 'not called';
+  ctx.chrome.storage.local.set = async (value) => { stored = value; };
+
+  const data = await ctx.runScraper(7);
+  assert.equal(data.ok, false);
+  // data.errors was built inside the vm context, so compare by value (see the
+  // cross-realm note on inRealm above) rather than assert.deepEqual.
+  assert.equal(JSON.stringify(data.errors), JSON.stringify(['No result from scraper']));
+  assert.equal(stored, 'not called', 'a rejected scrape must never be persisted');
+});
+
+test('runScraper() sanitizes and stores a well-formed scrape result', async () => {
+  const ctx = loadBackgroundContext();
+  ctx.chrome.scripting.executeScript = async () => [{ result: inRealm(ctx, basicScrape()) }];
+  let stored = null;
+  ctx.chrome.storage.local.set = async (value) => { stored = value; };
+
+  const data = await ctx.runScraper(7);
+  assert.equal(data.ok, true);
+  assert.equal(stored.lastScrape.narrative, 'Some narrative text.');
+  assert.equal(stored.lastScrape.schemaVersion, 1);
+});

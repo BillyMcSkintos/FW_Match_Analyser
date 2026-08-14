@@ -1710,6 +1710,10 @@ let _hFlowData   = null;
 let _aFlowData   = null;
 let _statusEvents = null; // sorted tacticalEvents used to resolve injury/tiredness at a given minute
 let _teamFilter   = 'both'; // 'both' | 'home' | 'away' — which opportunities the list shows
+// The raw scrape object (url/homeTeam/awayTeam/scrapedAt) render()'s own `scrape`
+// parameter goes out of scope once render() returns — JPG export needs it later (for the
+// filename and the export header), so it's kept here rather than re-threaded everywhere.
+let _lastRenderedScrape = null;
 
 // The pitch is a static shell of layered <g> groups, rebuilt only when what they show
 // actually changes (a fresh scrape, or a Home/Away/Both filter switch — both go through
@@ -1855,6 +1859,7 @@ function renderPanelSafely(panelId, label, renderFn) {
 }
 
 function render(scrape) {
+  _lastRenderedScrape = scrape;
   // Parse first so we have final score for the header + any parse warnings
   _match = null;
   let parseWarnings = [];
@@ -1934,6 +1939,7 @@ function render(scrape) {
   } catch(e) {
     showErrors([...(scrape.errors||[]), 'PITCH_ERROR: '+e.message]);
   }
+  updateExportControls();
 }
 
 // Filter pills + opportunity list — separated from render() so switching the Home/Away/
@@ -2007,12 +2013,9 @@ function unhoverOpp() {
   // Clicking an opportunity pins its pitch detail so it survives the mouse leaving the
   // row (see clickOpp/syncPinnedState) — the currently-expanded step-block IS that pinned
   // state, so revert to showing whichever one is open instead of going blank.
-  const openBlock = document.querySelector('.step-block.open');
-  if (openBlock && _match) {
-    const pinnedIdx = parseInt(openBlock.id.replace('steps-', ''));
-    const pinnedOpp = _match.opportunities[pinnedIdx];
-    if (pinnedOpp) { showPitchDetail(pinnedOpp, true); return; }
-  }
+  const pinnedIdx = getPinnedIdx();
+  const pinnedOpp = pinnedIdx !== null && _match ? _match.opportunities[pinnedIdx] : null;
+  if (pinnedOpp) { showPitchDetail(pinnedOpp, true); return; }
 
   setHighlight('', false);
   $('pass-summary').style.display = 'none';
@@ -2020,20 +2023,27 @@ function unhoverOpp() {
 }
 
 // The currently-expanded step-block IS the pin/selection state — there's no separate
-// variable to keep in sync, just a query for whichever block has .open, mirrored onto the
-// matching timeline marker and opp-row. Called from clickOpp so every path that can open/
-// close a row (a direct row click, or a timeline marker click via clickTimelineMarker)
-// stays in sync.
-function syncPinnedState() {
+// variable to keep in sync, just a query for whichever block has .open. Shared by every
+// reader of that state (unhoverOpp above, syncPinnedState below, and JPG export).
+function getPinnedIdx() {
   const openBlock = document.querySelector('.step-block.open');
-  const openIdx = openBlock ? openBlock.id.replace('steps-', '') : null;
-  const idx = openIdx == null ? null : parseInt(openIdx);
+  if (!openBlock) return null;
+  const idx = parseInt(openBlock.id.replace('steps-', ''), 10);
+  return Number.isSafeInteger(idx) ? idx : null;
+}
+
+// Called from clickOpp so every path that can open/close a row (a direct row click, or a
+// timeline marker click via clickTimelineMarker) stays in sync, including the JPG export
+// controls (the "possession" export scope is only enabled while something is pinned).
+function syncPinnedState() {
+  const idx = getPinnedIdx();
   document.querySelectorAll('.tl-marker').forEach(m => {
     m.classList.toggle('selected', parseInt(m.dataset.idx) === idx);
   });
   document.querySelectorAll('.opp-row').forEach(r => {
     r.classList.toggle('pinned', parseInt(r.dataset.idx) === idx);
   });
+  updateExportControls();
 }
 function markTimelineSelected(idx) {
   document.querySelectorAll('.tl-marker').forEach(m => {
@@ -2107,6 +2117,404 @@ function clickTimelineMarker(idx) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EXPORT — JPG SNAPSHOT
+// ─────────────────────────────────────────────────────────────────────────────
+// Adapted from an independent hardening/feature pass on a fork of this project
+// (TheCrowsFW/FW_Match_Analyser, hardened-0.6.0 branch): a self-contained SVG is built
+// entirely from already-parsed match data (no DOM screenshot, no external image/font
+// references), then rasterized locally to a JPG via <canvas>. Reuses this project's own
+// pitch/flow/highlight/timeline renderers (renderPitchOutline, buildBaseFlow/
+// renderBaseFlow, renderHighlightChain, renderMatchTimeline, computePhaseStats) instead
+// of porting the fork's parallel copies of them — both projects share the same 500×820
+// pitch-geometry heritage, so those functions already produce exactly the SVG fragments
+// an export needs, and there's no <marker>/href/url() indirection to special-case the
+// way the fork's assertSelfContainedExportSvg has to (arrows here are always plain
+// inline polygons — see arrowHead() above).
+//
+// Deliberately simpler than the fork's version in one respect: the full-view scope shows
+// the pinned possession's chain detail + narrative excerpt (mirroring what's already
+// visible in the live right-overlay panel) plus a compact per-window opportunity/shot/
+// goal table (computePhaseStats, reused from the Phases tab) rather than porting the
+// fork's much larger bespoke scrollable per-row opportunity-list renderer.
+
+const EXPORT_MAX_DISPLAY_CHARS = 240;
+const COMPACT_EXPORT_WIDTH = 1600;
+const COMPACT_EXPORT_HEIGHT = 1200;
+const FULL_VIEW_EXPORT_WIDTH = 1920;
+const FULL_VIEW_EXPORT_HEIGHT = 1080;
+const EXPORT_MAX_BYTES = 5_000_000;
+const MAX_POSSESSION_INDEX = 999;
+const EXPORT_MATCH_ID_RE = /\/match\/([a-z0-9-]{4,80})(?:\/|$)/i;
+const EXPORT_MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+function exportDimensions(scope) {
+  return scope === 'full-view'
+    ? { width: FULL_VIEW_EXPORT_WIDTH, height: FULL_VIEW_EXPORT_HEIGHT }
+    : { width: COMPACT_EXPORT_WIDTH, height: COMPACT_EXPORT_HEIGHT };
+}
+
+/** Remove XML 1.0-invalid code points, then escape every XML delimiter — export text
+ * reaches the SVG via raw string concatenation, not innerHTML, so it needs its own
+ * escaping pass distinct from escapeHtml() above. */
+function escapeXmlText(value) {
+  let clean = '';
+  for (const char of String(value ?? '')) {
+    const codePoint = char.codePointAt(0);
+    if (codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d ||
+        (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+        (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+        (codePoint >= 0x10000 && codePoint <= 0x10ffff)) {
+      clean += char;
+    }
+  }
+  return clean
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/** At most maxChars Unicode code points, ellipsis included, hard-capped at EXPORT_MAX_DISPLAY_CHARS. */
+function truncateDisplay(value, maxChars = 120) {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 0) return '';
+  const limit = Math.min(maxChars, EXPORT_MAX_DISPLAY_CHARS);
+  if (limit === 0) return '';
+  const prefix = [];
+  let exceeded = false;
+  for (const char of String(value ?? '')) {
+    if (prefix.length === limit) { exceeded = true; break; }
+    prefix.push(char);
+  }
+  if (!exceeded) return prefix.join('');
+  if (limit === 1) return '…';
+  prefix.length = limit - 1;
+  return `${prefix.join('')}…`;
+}
+
+/** Best-effort match-id token for a local filename. Unlike canonicalMatchUrl (the
+ * WRONG_PAGE gate in scraper.js), a filename doesn't need to reject anything: an
+ * id-shaped token is used if the URL loosely matches FinalWhistle's already-established
+ * /match/ convention (see background.js's "prefer actual match tabs" logic), and a
+ * timestamp is used otherwise — graceful degradation rather than throwing on any
+ * deviation, consistent with this project's parsing philosophy (see parser.js). */
+function exportMatchId(url, scrapedAt) {
+  if (typeof url === 'string') {
+    const match = EXPORT_MATCH_ID_RE.exec(url);
+    if (match) return match[1].toLowerCase();
+  }
+  const stamp = Number.isFinite(scrapedAt) ? scrapedAt : Date.now();
+  return `unknown-${stamp}`;
+}
+
+function buildExportFilename(url, scope, scrapedAt, possessionIndex = null) {
+  const id = exportMatchId(url, scrapedAt);
+  if (scope === 'possession' && Number.isSafeInteger(possessionIndex) &&
+      possessionIndex >= 0 && possessionIndex <= MAX_POSSESSION_INDEX) {
+    return `finalwhistle-match-${id}-possession-${String(possessionIndex + 1).padStart(3, '0')}.jpg`;
+  }
+  if (scope === 'overview') return `finalwhistle-match-${id}-overview.jpg`;
+  return `finalwhistle-match-${id}-full-view.jpg`;
+}
+
+function exportChainRows(opp) {
+  const c = stepsToChain(opp);
+  const nameTag = (name, pos) => name ? `${name.split(' ').pop()} [${pos || '?'}]` : (pos || '?');
+  const rows = [];
+  if (c.sP && c.mP) rows.push({ from: nameTag(c.sName, c.sP), to: nameTag(c.mName, c.mP), type: 'Start', q: c.sQ });
+  if (c.pbP && c.rP) rows.push({
+    from: nameTag(c.pbName, c.pbP), to: nameTag(c.rName, c.rP),
+    type: c.isLongBallSequence ? 'Long Ball' : 'Mid Action', q: c.pbQ,
+  });
+  if (c.shotQ) rows.push({
+    from: nameTag(c.shName, c.shP), to: nameTag(c.gkName, 'GK'),
+    type: c.directShot ? 'Mid Action' : 'PB Action', q: c.shotQ,
+  });
+  return rows;
+}
+
+function renderExportChainDetail(x, y, width, opp) {
+  const rows = opp ? exportChainRows(opp) : [];
+  const height = opp ? Math.max(110, 60 + rows.length * 26) : 90;
+  let svg = `<g data-export-section="chain-detail">` +
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="7" fill="#040912" fill-opacity=".95" stroke="#1a2540"/>` +
+    `<text x="${x + 12}" y="${y + 22}" fill="#8a9ab0" font-size="11" font-family="${EXPORT_MONO}" letter-spacing="2">CHAIN DETAIL</text>`;
+  if (!opp) {
+    svg += `<text x="${x + 12}" y="${y + 46}" fill="#9fb0c4" font-size="13" font-family="${EXPORT_MONO}">No possession pinned.</text>`;
+  } else if (!rows.length) {
+    svg += `<text x="${x + 12}" y="${y + 46}" fill="#9fb0c4" font-size="13" font-family="${EXPORT_MONO}">No bounded route summary available.</text>`;
+  } else {
+    const col = opp.teamSide === 'home' ? HC : AC;
+    let cursor = y + 44;
+    rows.forEach(row => {
+      svg += `<text x="${x + 12}" y="${cursor}" fill="${col}" font-size="12" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXmlText(truncateDisplay(`${row.from} → ${row.to}`, 40))}</text>` +
+        `<text x="${x + width - 48}" y="${cursor}" text-anchor="end" fill="#8a9ab0" font-size="10" font-family="${EXPORT_MONO}">${escapeXmlText(row.type)}</text>` +
+        `<text x="${x + width - 12}" y="${cursor}" text-anchor="end" fill="${row.q ? tierColor(qualityLabel(row.q)) : '#8a9ab0'}" font-size="12" font-weight="700" font-family="${EXPORT_MONO}">${escapeXmlText(row.q ?? '')}</text>`;
+      cursor += 26;
+    });
+  }
+  svg += '</g>';
+  return { svg, height };
+}
+
+function renderExportNarrative(x, y, width, height, opp) {
+  const maxLines = Math.max(3, Math.floor((height - 40) / 19));
+  const lines = [];
+  for (const rawLine of (opp?.rawLines || [])) {
+    if (lines.length >= maxLines) break;
+    lines.push(truncateDisplay(String(rawLine).trim(), 60));
+  }
+  if (!lines.length) lines.push(opp ? 'No narrative lines were available for this possession.' : 'Pin a possession to show its narrative.');
+  const text = lines.map((line, index) =>
+    `<text x="${x + 12}" y="${y + 30 + index * 19}" fill="#cdd6e5" font-size="12" font-family="${EXPORT_MONO}">${escapeXmlText(line)}</text>`
+  ).join('');
+  return `<g data-export-section="narrative">` +
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="7" fill="#050b14" fill-opacity=".95" stroke="#1a2540"/>` +
+    `<text x="${x + 12}" y="${y + 20}" fill="#8a9ab0" font-size="11" font-family="${EXPORT_MONO}" letter-spacing="2">NARRATIVE</text>` +
+    text + `</g>`;
+}
+
+function renderExportPhaseTable(x, y) {
+  const stats = computePhaseStats(_match);
+  let cursor = y;
+  let svg = `<g data-export-section="phase-summary">` +
+    `<text x="${x}" y="${cursor}" fill="#9fb0c4" font-size="12" font-family="ui-sans-serif, system-ui, sans-serif" letter-spacing="1">OPPS / SHOTS / GOALS BY WINDOW</text>`;
+  cursor += 22;
+  svg += `<text x="${x + 220}" y="${cursor}" fill="${HC}" font-size="10" font-family="${EXPORT_MONO}" text-anchor="middle">HOME</text>` +
+    `<text x="${x + 320}" y="${cursor}" fill="${AC}" font-size="10" font-family="${EXPORT_MONO}" text-anchor="middle">AWAY</text>`;
+  cursor += 20;
+  stats.forEach(s => {
+    svg += `<text x="${x}" y="${cursor}" fill="#cdd6e5" font-size="12" font-family="${EXPORT_MONO}">${escapeXmlText(s.label)}</text>` +
+      `<text x="${x + 220}" y="${cursor}" fill="${HC}" font-size="12" font-family="${EXPORT_MONO}" text-anchor="middle">${s.home.opps}/${s.home.shots}/${s.home.goals}</text>` +
+      `<text x="${x + 320}" y="${cursor}" fill="${AC}" font-size="12" font-family="${EXPORT_MONO}" text-anchor="middle">${s.away.opps}/${s.away.shots}/${s.away.goals}</text>`;
+    cursor += 22;
+  });
+  return svg + '</g>';
+}
+
+function exportSummaryLines(scope, opp) {
+  if (scope === 'overview') {
+    const opportunities = _match.opportunities;
+    return [
+      ['View', 'Whole-match overview'],
+      ['Home starting opportunities', opportunities.filter(o => o.teamSide === 'home').length],
+      ['Away starting opportunities', opportunities.filter(o => o.teamSide === 'away').length],
+      ['Shot opportunities', opportunities.filter(o => o.hasShot).length],
+      ['Goals', opportunities.filter(o => o.hasGoal).length],
+      ['Counters', opportunities.filter(o => o.isCounterAttack).length],
+    ];
+  }
+  return [
+    ['View', `Pinned possession ${getPinnedIdx() + 1}`],
+    ['Minute', `${opp.minute ?? '?'}'`],
+    ['Opportunity started by', opp.team || opp.teamSide || '?'],
+    ['Score after', `${opp.scoreAfter?.home ?? 0}-${opp.scoreAfter?.away ?? 0}`],
+    ['Outcome', OUT_LBL[opp.finalOutcome] || opp.finalOutcome || 'Unknown'],
+  ];
+}
+
+// Reuses the live scorers row logic (buildScorers/groupByPlayer) but as SVG <text>,
+// since renderScorersRow's own output is HTML.
+function renderExportScorers(x, y, width) {
+  const scorers = buildScorers(_match);
+  if (!scorers.length) return '';
+  const byScorer = groupByPlayer(scorers, s => s.scorer);
+  const summarize = side => byScorer.filter(e => e.teamSide === side).map(e => {
+    const player = (e.name || '?').split(/\s+/).filter(Boolean).at(-1) || '?';
+    const minutes = e.mins.map(m => `${m.minute}'${m.isPenalty ? ' pen' : ''}`).join(', ');
+    return `${player} (${minutes})`;
+  }).join(' · ');
+  const home = truncateDisplay(summarize('home'), 48);
+  const away = truncateDisplay(summarize('away'), 48);
+  const sans = 'ui-sans-serif, system-ui, sans-serif';
+  return (home ? `<text x="${x}" y="${y}" fill="${HC}" font-size="11" font-family="${sans}">${escapeXmlText(home)}</text>` : '') +
+    (away ? `<text x="${x + width}" y="${y}" text-anchor="end" fill="${AC}" font-size="11" font-family="${sans}">${escapeXmlText(away)}</text>` : '');
+}
+
+// A complete "<svg viewBox=...>...</svg>" string from one of this file's own live
+// renderers (e.g. renderMatchTimeline) nests directly inside the export SVG as a
+// positioned sub-viewport — SVG natively supports this, so the live renderer is reused
+// byte-for-byte instead of re-implementing its layout here. The CSS classes it carries
+// (tl-marker, tl-dot, ...) have no effect without the page stylesheet, but every visual
+// property that matters (fill/stroke color, radius) is already set via inline attributes.
+function embedNestedSvg(innerSvg, x, y, width, height) {
+  const viewBoxMatch = /viewBox="([^"]+)"/.exec(innerSvg);
+  const viewBox = viewBoxMatch ? viewBoxMatch[1] : `0 0 ${width} ${height}`;
+  const inner = innerSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+  return `<svg x="${x}" y="${y}" width="${width}" height="${height}" viewBox="${viewBox}" preserveAspectRatio="none">${inner}</svg>`;
+}
+
+function assertSelfContainedExportSvg(svg) {
+  if (svg.length > 1_000_000 ||
+      /<(?:foreignObject|image)\b|<(?!svg\b)[^>]+\b(?:xlink:)?href\s*=|<[^>]+\b(?:style|fill|stroke|filter|mask|clip-path)="[^"]*\burl\s*\(/i.test(svg)) {
+    throw new Error('EXPORT_SVG_INVALID: The local presentation did not pass its self-contained SVG check.');
+  }
+}
+
+function buildCompactExportSvg(scope) {
+  const pinnedIdx = getPinnedIdx();
+  const opp = scope === 'possession' && Number.isSafeInteger(pinnedIdx) ? _match.opportunities[pinnedIdx] : null;
+  if (scope === 'possession' && !opp) {
+    throw new Error('NO_PINNED_POSSESSION: Click a possession before exporting it.');
+  }
+  const { width, height } = exportDimensions(scope);
+  const homeTeam = truncateDisplay(_match.meta?.homeTeam || _lastRenderedScrape?.homeTeam || 'Home', 20);
+  const awayTeam = truncateDisplay(_match.meta?.awayTeam || _lastRenderedScrape?.awayTeam || 'Away', 20);
+  const fs = _match.meta?.finalScore;
+  const score = fs ? `${fs.home ?? 0} – ${fs.away ?? 0}` : 'vs';
+  const homeFlow = renderBaseFlow(_hFlowData?.edgeCounts || {}, _hFlowData?.nodeCounts || {}, 'home');
+  const awayFlow = renderBaseFlow(_aFlowData?.edgeCounts || {}, _aFlowData?.nodeCounts || {}, 'away');
+  const highlight = opp ? renderHighlightChain(opp) : '';
+  const flowOpacity = opp ? '.16' : '1';
+  const summary = exportSummaryLines(scope, opp).map(([label, value], index) => {
+    const y = 335 + index * 58;
+    return `<text x="790" y="${y}" fill="#71839b" font-size="19" font-family="${EXPORT_MONO}" letter-spacing="1">${escapeXmlText(label)}</text>` +
+      `<text x="790" y="${y + 26}" fill="#e4e9f5" font-size="25" font-family="${EXPORT_MONO}">${escapeXmlText(truncateDisplay(String(value), 42))}</text>`;
+  }).join('');
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" data-export-scope="${scope}">` +
+    `<rect width="${width}" height="${height}" fill="#060d18"/>` +
+    `<text x="80" y="78" fill="#8a9ab0" font-size="22" font-family="${EXPORT_MONO}" letter-spacing="4">FINALWHISTLE MATCH ANALYSER · LOCAL</text>` +
+    `<text x="80" y="135" fill="${HC}" font-size="30" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXmlText(homeTeam)}</text>` +
+    `<text x="800" y="135" text-anchor="middle" fill="#e4e9f5" font-size="38" font-weight="700" font-family="${EXPORT_MONO}">${escapeXmlText(score)}</text>` +
+    `<text x="1520" y="135" text-anchor="end" fill="${AC}" font-size="30" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXmlText(awayTeam)}</text>` +
+    `<line x1="80" y1="165" x2="1520" y2="165" stroke="#1a2540" stroke-width="2"/>` +
+    `<g transform="translate(90 210) scale(1.12)">${renderPitchOutline()}` +
+      `<g opacity="${flowOpacity}">${homeFlow}${awayFlow}</g>${highlight}</g>` +
+    `<rect x="750" y="235" width="770" height="700" rx="18" fill="#091321" stroke="#1a2540" stroke-width="2"/>` +
+    `<text x="790" y="290" fill="#9fb0c4" font-size="25" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif">${scope === 'overview' ? 'MATCH OVERVIEW' : 'PINNED POSSESSION'}</text>` +
+    summary +
+    `<text x="80" y="1180" fill="#5a6f8c" font-size="17" font-family="${EXPORT_MONO}">Local export only — nothing is uploaded.</text>` +
+    `</svg>`;
+  assertSelfContainedExportSvg(svg);
+  return svg;
+}
+
+function buildFullViewExportSvg() {
+  const { width, height } = exportDimensions('full-view');
+  const pinnedIdx = getPinnedIdx();
+  const opp = Number.isSafeInteger(pinnedIdx) ? _match.opportunities[pinnedIdx] : null;
+  const homeTeam = truncateDisplay(_match.meta?.homeTeam || _lastRenderedScrape?.homeTeam || 'Home', 28);
+  const awayTeam = truncateDisplay(_match.meta?.awayTeam || _lastRenderedScrape?.awayTeam || 'Away', 28);
+  const fs = _match.meta?.finalScore;
+  const score = fs ? `${fs.home ?? 0} – ${fs.away ?? 0}` : 'vs';
+  const scrapedAt = Number.isFinite(_lastRenderedScrape?.scrapedAt)
+    ? new Date(_lastRenderedScrape.scrapedAt).toLocaleTimeString() : 'unknown';
+  const homeFlow = renderBaseFlow(_hFlowData?.edgeCounts || {}, _hFlowData?.nodeCounts || {}, 'home');
+  const awayFlow = renderBaseFlow(_aFlowData?.edgeCounts || {}, _aFlowData?.nodeCounts || {}, 'away');
+  const highlight = opp ? renderHighlightChain(opp) : '';
+  const flowOpacity = opp ? '.15' : '1';
+  const viewLabel = opp ? `PINNED POSSESSION ${pinnedIdx + 1}` : 'WHOLE MATCH';
+  const chain = renderExportChainDetail(1530, 20, 380, opp);
+  const narrativeY = 30 + chain.height;
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" data-export-scope="full-view">` +
+    `<rect width="${width}" height="${height}" fill="#060d18"/>` +
+    `<rect x="0" y="0" width="600" height="${height}" fill="#090f1e"/>` +
+    `<text x="300" y="17" text-anchor="middle" fill="#5a6f8c" font-size="10" font-family="${EXPORT_MONO}" letter-spacing="1">scraped ${escapeXmlText(scrapedAt)}</text>` +
+    `<text x="10" y="45" fill="${HC}" font-size="14" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXmlText(homeTeam)}</text>` +
+    `<text x="300" y="45" text-anchor="middle" fill="#e4e9f5" font-size="20" font-weight="700" font-family="${EXPORT_MONO}" letter-spacing="3">${escapeXmlText(score)}</text>` +
+    `<text x="590" y="45" text-anchor="end" fill="${AC}" font-size="14" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXmlText(awayTeam)}</text>` +
+    renderExportScorers(10, 68, 580) +
+    `<line x1="10" y1="104" x2="590" y2="104" stroke="#1a2540"/>` +
+    `<text x="10" y="130" fill="#9fb0c4" font-size="14" font-weight="700" font-family="ui-sans-serif, system-ui, sans-serif" letter-spacing="1">FW ANALYSER · LOCAL</text>` +
+    `<text x="590" y="130" text-anchor="end" fill="#5a6f8c" font-size="9" font-family="${EXPORT_MONO}">SESSION-ONLY · FULL VIEW JPG</text>` +
+    `<line x1="0" y1="145" x2="600" y2="145" stroke="#1a2540"/>` +
+    embedNestedSvg(renderMatchTimeline(_match), 0, 150, 600, 58) +
+    `<line x1="0" y1="212" x2="600" y2="212" stroke="#1a2540"/>` +
+    renderExportPhaseTable(10, 240) +
+    `<line x1="600" y1="0" x2="600" y2="${height}" stroke="#1a2540"/>` +
+    `<text x="1060" y="31" text-anchor="middle" fill="#9fb0c4" font-size="13" font-family="${EXPORT_MONO}" letter-spacing="2">FULL ANALYSER VIEW · ${escapeXmlText(viewLabel)}</text>` +
+    `<text x="1060" y="52" text-anchor="middle" fill="#5a6f8c" font-size="10" font-family="${EXPORT_MONO}">LOCAL EXPORT ONLY · NOTHING IS UPLOADED</text>` +
+    `<g transform="translate(775 65) scale(1.14)">${renderPitchOutline()}` +
+      `<g opacity="${flowOpacity}">${homeFlow}${awayFlow}</g>${highlight}</g>` +
+    chain.svg + renderExportNarrative(1530, narrativeY, 380, 1050 - narrativeY, opp) +
+    `</svg>`;
+  assertSelfContainedExportSvg(svg);
+  return svg;
+}
+
+function buildExportSvg(scope) {
+  if (!_match?.opportunities?.length) {
+    throw new Error('NO_EXPORTABLE_MATCH: Scrape a valid match before exporting.');
+  }
+  if (!['full-view', 'overview', 'possession'].includes(scope)) {
+    throw new Error('EXPORT_SVG_INVALID: Choose a valid export scope.');
+  }
+  return scope === 'full-view' ? buildFullViewExportSvg() : buildCompactExportSvg(scope);
+}
+
+async function createExportJpeg(scope) {
+  const svg = buildExportSvg(scope);
+  const { width, height } = exportDimensions(scope);
+  const filename = buildExportFilename(
+    _lastRenderedScrape?.url, scope, _lastRenderedScrape?.scrapedAt,
+    scope === 'possession' ? getPinnedIdx() : null,
+  );
+  const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+  try {
+    const image = new Image();
+    image.src = svgUrl;
+    try { await image.decode(); }
+    catch { throw new Error('EXPORT_RASTER_FAILED: Chrome could not decode the local SVG presentation.'); }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('EXPORT_RASTER_FAILED: A local canvas could not be created.');
+    context.fillStyle = '#060d18';
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob || blob.type !== 'image/jpeg' || blob.size < 1_000 || blob.size > EXPORT_MAX_BYTES) {
+      throw new Error('EXPORT_ENCODING_FAILED: Chrome did not create a bounded JPG.');
+    }
+    return { blob, filename };
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+function updateExportControls() {
+  const scopeEl = $('export-scope');
+  if (!scopeEl) return;
+  const hasMatch = !!_match?.opportunities?.length;
+  const hasPin = hasMatch && Number.isSafeInteger(getPinnedIdx());
+  scopeEl.disabled = !hasMatch;
+  const possessionOption = $('export-possession-option');
+  if (possessionOption) possessionOption.disabled = !hasPin;
+  if (!hasPin && scopeEl.value === 'possession') scopeEl.value = 'full-view';
+  $('btn-save-jpg').disabled = !hasMatch || (scopeEl.value === 'possession' && !hasPin);
+}
+
+async function saveJpg() {
+  const scope = $('export-scope').value;
+  $('btn-save-jpg').disabled = true;
+  $('status').textContent = 'Building JPG…';
+  try {
+    const { blob, filename } = await createExportJpeg(scope);
+    const jpegUrl = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = jpegUrl;
+      anchor.download = filename;
+      anchor.hidden = true;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    } finally {
+      URL.revokeObjectURL(jpegUrl);
+    }
+    $('status').textContent = 'JPG download started';
+  } catch (error) {
+    $('status').textContent = 'Export failed';
+    $('errors').innerHTML = `<div class="err-banner">${escapeHtml(String(error?.message || 'EXPORT_FAILED: The JPG could not be created.'))}</div>`;
+  } finally {
+    updateExportControls();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────────────────────
 function activateTab(name) {
@@ -2171,12 +2579,14 @@ $('btn-load').addEventListener('click', async () => {
 $('btn-clear').addEventListener('click', async () => {
   await chrome.storage.local.remove('lastScrape');
   _match = null;
+  _lastRenderedScrape = null;
   $('status').textContent = 'Cleared';
   ['errors','meta-bar','opp-summary','timeline-wrap'].forEach(id => { const e=$( id); if(e){ e.innerHTML=''; e.style.display=''; }});
   $('tabs').style.display = 'none';
   $('opp-list').innerHTML = '<div class="no-data">Scrape a match to begin</div>';
   _hFlowData = null; _aFlowData = null;
   buildBasePitch();
+  updateExportControls();
 });
 
 // Open a FinalWhistle tab (focusing one if it's already open) plus a second, blank
@@ -2196,6 +2606,10 @@ $('btn-new-tab').addEventListener('click', async () => {
   }
   await chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') + '?fresh=1' });
 });
+
+$('btn-save-jpg').addEventListener('click', saveJpg);
+$('export-scope').addEventListener('change', updateExportControls);
+updateExportControls();
 
 // Launch behavior depends on how this tab was opened:
 //   ?autoscrape=1 — fresh launch via the toolbar icon (background.js) — clear any

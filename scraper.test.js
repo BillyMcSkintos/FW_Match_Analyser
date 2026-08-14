@@ -68,6 +68,7 @@ function loadScraperContext({ narrativeText, telemetryLines, teams, hasStats, st
   const sandbox = {
     console,
     Node: { ELEMENT_NODE, TEXT_NODE },
+    URL, // vm contexts don't inherit Node's own globals automatically — canonicalMatchUrl needs this
     location: { href: 'https://www.finalwhistle.org/match/123' },
     window: {},
     document: {
@@ -288,4 +289,42 @@ test('waitForStable resolves stable:false if measure() keeps changing past the h
   const result = await resultPromise;
   clearInterval(iv);
   assert.equal(result.stable, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canonicalMatchUrl — reviewed against a fork's independent hardening pass
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('canonicalMatchUrl accepts finalwhistle.org and its subdomains over https', () => {
+  const ctx = loadScraperContext({ narrativeText: null, telemetryLines: null, teams: [], hasStats: false });
+  assert.equal(ctx.canonicalMatchUrl('https://www.finalwhistle.org/en/match/abc'), 'https://www.finalwhistle.org/en/match/abc');
+  assert.equal(ctx.canonicalMatchUrl('https://finalwhistle.org/match/1'), 'https://finalwhistle.org/match/1');
+});
+
+test('canonicalMatchUrl rejects the wrong protocol, wrong host, embedded credentials, and a non-default port', () => {
+  const ctx = loadScraperContext({ narrativeText: null, telemetryLines: null, teams: [], hasStats: false });
+  assert.equal(ctx.canonicalMatchUrl('http://www.finalwhistle.org/match/1'), null, 'must be https');
+  assert.equal(ctx.canonicalMatchUrl('https://evil.com/finalwhistle.org/match/1'), null, 'host must actually be finalwhistle.org');
+  assert.equal(ctx.canonicalMatchUrl('https://finalwhistle.org.evil.com/match/1'), null, 'suffix spoofing must not pass');
+  assert.equal(ctx.canonicalMatchUrl('https://user:pass@www.finalwhistle.org/match/1'), null, 'no embedded credentials');
+  assert.equal(ctx.canonicalMatchUrl('https://www.finalwhistle.org:8443/match/1'), null, 'no non-default port');
+  assert.equal(ctx.canonicalMatchUrl(null), null);
+  assert.equal(ctx.canonicalMatchUrl(42), null);
+  assert.equal(ctx.canonicalMatchUrl('not a url at all'), null);
+});
+
+test('fwScrape() fails fast with WRONG_PAGE when the page URL is not finalwhistle.org', () => {
+  const ctx = loadScraperContext({
+    narrativeText: 'Opportunity for Home Team.\n[0-0]\nMinute 5\nMidfield\n',
+    telemetryLines: [makeTelemetryLine(5, 'H', 'O_MID_START', null)],
+    teams: ['Home Team', 'Away Team'],
+    hasStats: true,
+  });
+  ctx.location.href = 'https://not-finalwhistle.example.com/match/1';
+  const result = ctx.fwScrape();
+  assert.equal(result.ok, false);
+  // result.errors is a cross-realm array (from the vm context) — compare via JSON, not
+  // assert.deepEqual's strict mode, which treats cross-realm objects/arrays as never
+  // reference-equal even with identical contents (same gotcha as the stats-table test).
+  assert.equal(JSON.stringify(result.errors), JSON.stringify(['WRONG_PAGE: this does not look like a finalwhistle.org page URL.']));
 });
