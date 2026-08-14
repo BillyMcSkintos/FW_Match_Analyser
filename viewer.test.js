@@ -25,6 +25,7 @@ function makeStubElement() {
 function loadViewerContext() {
   const src = fs.readFileSync(path.join(__dirname, 'viewer.js'), 'utf8');
   const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
+  const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
   const sandbox = {
     console,
     document: {
@@ -43,10 +44,12 @@ function loadViewerContext() {
     URLSearchParams,
   };
   const context = vm.createContext(sandbox);
-  // parser.js's functions (qualityLabel, qv, tierColor-adjacent) are referenced by
-  // viewer.js at file scope in a couple of spots, so load it into the same context
-  // first, mirroring how viewer.html loads parser.js before viewer.js.
+  // parser.js's functions (qualityLabel, qv, tierColor-adjacent) and analytics.js's
+  // Phase C functions (phasePerformance, opportunityFunnel, ...) are referenced by
+  // viewer.js, so load both into the same context first, mirroring viewer.html's own
+  // script order: utils.js, parser.js, analytics.js, viewer.js.
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
+  vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });
   return context;
 }
@@ -353,4 +356,53 @@ test('renderSquadTab still renders the existing sections alongside the new Tacti
   assert.ok(html.includes('Tactical Phases'));
   assert.ok(html.includes('Position Changes'));
   assert.ok(html.includes('Substitutions'));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Analysis tab (Phase C)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('renderAnalysisTab renders the funnel, phase comparison and defensive breakdown sections', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 30', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [RB] attempted high good pass to Player D [FW]',
+    'Player E [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, Player E [CB] made weak tackle.',
+    'Player D [FW] took control of the ball.',
+    'Goal Attempt', 'Player D [FW] made superb shot.', 'Player F [GK] was fooled.', 'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "30' - H - O_PB_START", "30' - H - V_PASS - (55)", "30' - A - V_ASSISTANCE - (30)",
+    "30' - H - V_RECEPTION - (65)", "30' - A - V_TACKLING - (35)",
+    "30' - H - V_SHOT - (70)", "30' - A - V_REFLEX - (20)", "30' - H - E_GOAL",
+  ].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderAnalysisTab(match);
+  assert.ok(html.includes('Opportunity Funnel'));
+  assert.ok(html.includes('Tactical Phase Comparison'));
+  assert.ok(html.includes('Defensive Breakdown'));
+  // Away conceded the goal — its defensive breakdown must show the failed duel and
+  // defender (lastName() shows only the final name token, matching the rest of the app).
+  assert.ok(html.includes('lost by E'), 'the failed defender should appear in the breakdown text');
+});
+
+test('renderAnalysisTab escapes malicious player/team names in the defensive breakdown', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 30', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [RB] attempted high good pass to Player D [FW]',
+    '<script>evil()</script> [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, <script>evil()</script> [CB] made weak tackle.',
+    'Player D [FW] took control of the ball.',
+    'Goal Attempt', 'Player D [FW] made superb shot.', 'Player F [GK] was fooled.', 'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "30' - H - O_PB_START", "30' - H - V_PASS - (55)", "30' - A - V_ASSISTANCE - (30)",
+    "30' - H - V_RECEPTION - (65)", "30' - A - V_TACKLING - (35)",
+    "30' - H - V_SHOT - (70)", "30' - A - V_REFLEX - (20)", "30' - H - E_GOAL",
+  ].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderAnalysisTab(match);
+  assert.ok(!html.includes('<script>evil()'), 'raw tag must not survive into the rendered breakdown');
 });

@@ -1595,6 +1595,104 @@ function renderSquadTab(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ANALYSIS TAB  (Phase C — Tactical Analysis)
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure rendering over analytics.js's plain data — no analysis logic lives here. Numbers
+// and neutral deltas only: nowhere in this section does a "good tactic" / "successful
+// change" verdict get attached to a comparison (Phase C's own explicit constraint) —
+// that judgment is left to the reader, not asserted by the UI.
+
+function fmtDelta(n) { return n == null ? '—' : (n >= 0 ? '+' : '') + n; }
+
+function renderPhaseComparisonCard(match, side, phase, idx, col) {
+  const period = phase.endMinute != null ? `${phase.startMinute}–${phase.endMinute}'` : `${phase.startMinute}'+`;
+  const delta = idx > 0 ? compareAdjacentPhases(match, side, phase.phaseId) : null;
+  const deltaLine = delta
+    ? `<div class="qt-hint">Δ vs previous phase: opportunities ${fmtDelta(delta.delta.ownOpportunities)}, shots ${fmtDelta(delta.delta.ownShots)}, shots conceded ${fmtDelta(delta.delta.opponentShots)}</div>`
+    : '';
+  const degradedTag = phase.confidence === 'degraded' ? ' · <span title="Telemetry alignment is degraded for part of this match">⚠ degraded</span>' : '';
+  return `<div style="margin-bottom:8px;padding:6px 8px;border-left:2px solid ${col};background:#0d1526">
+    <div style="font-size:11px;color:${col};font-weight:700">${escapeHtml(period)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:11px;margin:4px 0">
+      <span>Opportunities: <b>${phase.ownOpportunities}</b> / ${phase.opponentOpportunities}</span>
+      <span>PB entries: <b>${phase.ownPBEntries}</b> / ${phase.opponentPBEntries}</span>
+      <span>Shots: <b>${phase.ownShots}</b> / ${phase.opponentShots}</span>
+      <span>Goals: <b>${phase.ownGoals}</b> / ${phase.opponentGoals}</span>
+    </div>
+    <div class="qt-hint">${phase.sampleSize} opportunit${phase.sampleSize===1?'y':'ies'} in this phase — ${phase.confidenceHint}${degradedTag}</div>
+    ${deltaLine}
+  </div>`;
+}
+
+function renderPhaseComparisonSection(match, side, col) {
+  const perf = phasePerformance(match, side);
+  if (!perf.length) return '';
+  return `<div class="dist-title">Tactical Phase Comparison (${perf.length})</div>` +
+    `<div class="qt-hint">Own / Opponent counts per material tactical-state phase (see the Squad tab for what changed at each boundary). The Δ line is a neutral numeric comparison against the previous phase, not a verdict on whether the change helped.</div>` +
+    perf.map((p, i) => renderPhaseComparisonCard(match, side, p, i, col)).join('');
+}
+
+function renderFunnelSection(match) {
+  const funnel = opportunityFunnel(match);
+  const row = (label, home, away, homeTotal, awayTotal) => {
+    const hp = homeTotal ? Math.round(home / homeTotal * 100) : 0;
+    const ap = awayTotal ? Math.round(away / awayTotal * 100) : 0;
+    return statBarRow(label, `${home} (${hp}%)`, `${away} (${ap}%)`, home, away);
+  };
+  let html = `<div class="dist-title">Opportunity Funnel</div>`;
+  html += `<div class="qt-hint">Where each side's opportunities progressed to, using the step model directly (not narrative keyword guessing). Percentages are of that side's own total.</div>`;
+  html += row('Total opportunities', funnel.home.total, funnel.away.total, funnel.home.total, funnel.away.total);
+  html += row('Reached midfield duel', funnel.home.reachedMidfield, funnel.away.reachedMidfield, funnel.home.total, funnel.away.total);
+  html += row('Reached penalty box', funnel.home.reachedPenaltyBox, funnel.away.reachedPenaltyBox, funnel.home.total, funnel.away.total);
+  html += row('Shots', funnel.home.shots, funnel.away.shots, funnel.home.total, funnel.away.total);
+  html += row('Goals', funnel.home.goals, funnel.away.goals, funnel.home.total, funnel.away.total);
+  if (funnel.confidence === 'degraded')
+    html += `<div class="qt-hint">⚠ Telemetry alignment is degraded for part of this match — counts above are exact (they come from narrative outcomes, not telemetry values).</div>`;
+  return html;
+}
+
+function renderDefensiveBreakdownSection(match, side, col) {
+  const chains = defensiveFailureChains(match).filter(c => c.defendingSide === side);
+  const title = `<div class="dist-title">Defensive Breakdown — shots conceded (${chains.length})</div>`;
+  if (!chains.length) return title + `<div class="qt-hint">No shots conceded.</div>`;
+  const rows = chains.map(c => {
+    // Same .opp-row + data-idx convention the Opportunities list and timeline already
+    // use — reuses the existing hover/click pitch-highlight wiring (hoverOpp/clickOpp)
+    // rather than duplicating any of the pitch rendering here.
+    const idx = (match.opportunities || []).findIndex(o => o.sequence === c.sequence);
+    const fail = c.firstFailedDefensiveStage;
+    const failTxt = fail
+      ? `${STEP_TYPE_LBL[fail.stepType] || fail.stepType} lost by ${lastName(fail.defender)}`
+      : 'no preceding duel lost (set piece / direct shot)';
+    const oc = OUT_COL[c.gkOutcome] || '#8a9ab0';
+    const ol = OUT_LBL[c.gkOutcome] || c.gkOutcome || '';
+    return `<div class="opp-row ${side}" data-idx="${idx}">
+      <span class="opp-min" style="color:${col}">${c.minute}'</span>
+      <span style="font-size:11px;flex:1;padding:0 6px">${escapeHtml(failTxt)}</span>
+      <span style="font-size:12px;font-weight:600;color:${oc}">${escapeHtml(ol)}</span>
+    </div>`;
+  }).join('');
+  return title +
+    `<div class="qt-hint">One row per opponent shot. "First failed defensive stage" is the earliest duel the attacker won outright (never a raw value comparison) — set pieces/direct shots with no preceding duel show none. Hover or click a row to highlight it on the pitch.</div>` +
+    rows;
+}
+
+function renderAnalysisTab(match) {
+  if (!match?.opportunities?.length) return '<div class="no-data" style="padding:20px 0">No match data.</div>';
+  const homeName = match.meta?.homeTeam || 'Home', awayName = match.meta?.awayTeam || 'Away';
+  let html = `<div style="padding:8px;overflow-y:auto;flex:1">`;
+  html += renderFunnelSection(match);
+  html += `<div class="ps-team" style="color:${HC};border-color:${HC}44;margin-top:14px">${escapeHtml(homeName)}</div>`;
+  html += renderPhaseComparisonSection(match, 'home', HC);
+  html += renderDefensiveBreakdownSection(match, 'home', HC);
+  html += `<div class="ps-team" style="color:${AC};border-color:${AC}44;margin-top:14px">${escapeHtml(awayName)}</div>`;
+  html += renderPhaseComparisonSection(match, 'away', AC);
+  html += renderDefensiveBreakdownSection(match, 'away', AC);
+  html += `</div>`;
+  return html;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN RENDER
 // ─────────────────────────────────────────────────────────────────────────────
 let _match       = null;
@@ -1792,6 +1890,7 @@ function render(scrape) {
   $('panel-stats').innerHTML = renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities);
   $('panel-phases').innerHTML = renderPhaseStats(_match);
   $('panel-squad').innerHTML = renderSquadTab(_match);
+  $('panel-analysis').innerHTML = renderAnalysisTab(_match);
 
   // Pitch — rebuild entire SVG as one string (SVG namespace safe)
   try {
