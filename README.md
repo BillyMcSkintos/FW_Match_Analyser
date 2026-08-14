@@ -27,6 +27,9 @@ statistics views.
 - **Narrative / Telemetry** — the raw scraped text, color-coded by quality
   tier and team, with the same timeline linking into it.
 
+<img width="623" height="959" alt="image" src="https://github.com/user-attachments/assets/ab3e6928-83d1-46c9-8617-27439b92fab0" />
+
+
 ## Installing
 
 This isn't on the Chrome Web Store — load it as an unpacked extension:
