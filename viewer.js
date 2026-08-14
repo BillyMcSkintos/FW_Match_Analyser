@@ -1607,6 +1607,24 @@ function renderOppSummaryAndList() {
 // ─────────────────────────────────────────────────────────────────────────────
 // HOVER / CLICK INTERACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
+// Renders one opportunity's pitch highlight chain, pass summary, and raw-narrative
+// overlay — the actual "show this opportunity's detail" work, shared by hoverOpp (live
+// preview while the mouse is over a row/marker) and unhoverOpp's pinned-opportunity
+// restore (see clickOpp) so there's one implementation of what "showing an opportunity
+// on the pitch" means, not two that could drift apart.
+function showPitchDetail(opp, dim) {
+  try { setHighlight(renderHighlightChain(opp), dim); } catch(e) { console.error('pitch highlight error', e); }
+  const ps = $('pass-summary');
+  ps.style.display = 'block';
+  ps.innerHTML = buildPassSummary(opp);
+  if (opp.rawLines?.length) {
+    $('raw-panel').style.display = 'block';
+    $('raw-text').innerHTML = opp.rawLines
+      .map(l => colorizeNarrativeLine(l, _match.playerRegistry))
+      .join('\n');
+  }
+}
+
 function hoverOpp(idx) {
   if (!_match) return;
   // mouseover re-fires for every child element inside the row (mini-chain SVG shapes,
@@ -1624,20 +1642,7 @@ function hoverOpp(idx) {
   document.querySelectorAll('.tl-marker').forEach(m => {
     m.classList.toggle('hovered', parseInt(m.dataset.idx) === idx);
   });
-  // Highlight this chain — only touches the highlight layer + flow opacity, not the
-  // whole pitch (see buildBasePitch/setHighlight above)
-  try { setHighlight(renderHighlightChain(opp), true); } catch(e) { console.error('pitch hover error', e); }
-  // Pass summary
-  const ps = $('pass-summary');
-  ps.style.display = 'block';
-  ps.innerHTML = buildPassSummary(opp);
-  // Raw text
-  if (opp.rawLines?.length) {
-    $('raw-panel').style.display = 'block';
-    $('raw-text').innerHTML = opp.rawLines
-      .map(l => colorizeNarrativeLine(l, _match.playerRegistry))
-      .join('\n');
-  }
+  showPitchDetail(opp, true);
 }
 
 function unhoverOpp() {
@@ -1645,19 +1650,37 @@ function unhoverOpp() {
   _hoveredIdx = null;
   document.querySelectorAll('.opp-row').forEach(r => r.classList.remove('hovered'));
   document.querySelectorAll('.tl-marker').forEach(m => m.classList.remove('hovered'));
+
+  // Clicking an opportunity pins its pitch detail so it survives the mouse leaving the
+  // row (see clickOpp/syncPinnedState) — the currently-expanded step-block IS that pinned
+  // state, so revert to showing whichever one is open instead of going blank.
+  const openBlock = document.querySelector('.step-block.open');
+  if (openBlock && _match) {
+    const pinnedIdx = parseInt(openBlock.id.replace('steps-', ''));
+    const pinnedOpp = _match.opportunities[pinnedIdx];
+    if (pinnedOpp) { showPitchDetail(pinnedOpp, true); return; }
+  }
+
   setHighlight('', false);
   $('pass-summary').style.display = 'none';
   $('raw-panel').style.display = 'none';
 }
 
-// The currently-expanded step-block IS the selection state — there's no separate "selected
-// opportunity" variable to keep in sync, just a query for whichever block has .open, mirrored
-// onto the matching timeline marker. Called from clickOpp so every path that can open/close a
-// row (a direct row click, or a timeline marker click via clickTimelineMarker) stays in sync.
-function syncTimelineSelection() {
+// The currently-expanded step-block IS the pin/selection state — there's no separate
+// variable to keep in sync, just a query for whichever block has .open, mirrored onto the
+// matching timeline marker and opp-row. Called from clickOpp so every path that can open/
+// close a row (a direct row click, or a timeline marker click via clickTimelineMarker)
+// stays in sync.
+function syncPinnedState() {
   const openBlock = document.querySelector('.step-block.open');
   const openIdx = openBlock ? openBlock.id.replace('steps-', '') : null;
-  markTimelineSelected(openIdx == null ? null : parseInt(openIdx));
+  const idx = openIdx == null ? null : parseInt(openIdx);
+  document.querySelectorAll('.tl-marker').forEach(m => {
+    m.classList.toggle('selected', parseInt(m.dataset.idx) === idx);
+  });
+  document.querySelectorAll('.opp-row').forEach(r => {
+    r.classList.toggle('pinned', parseInt(r.dataset.idx) === idx);
+  });
 }
 function markTimelineSelected(idx) {
   document.querySelectorAll('.tl-marker').forEach(m => {
@@ -1692,7 +1715,16 @@ function clickOpp(idx) {
   // Close all
   document.querySelectorAll('.step-block').forEach(b => b.classList.remove('open'));
   if (!isOpen) block.classList.add('open');
-  syncTimelineSelection();
+  syncPinnedState();
+
+  // Un-pinning while the mouse has already left the row (e.g. via a marker click that
+  // toggled the same opportunity closed) should drop back to blank instead of leaving a
+  // stale chain on screen with nothing selected to justify it.
+  if (isOpen && _hoveredIdx === null) {
+    setHighlight('', false);
+    $('pass-summary').style.display = 'none';
+    $('raw-panel').style.display = 'none';
+  }
 }
 
 // Clicking a timeline marker locates the matching opportunity row, scrolls it into view,

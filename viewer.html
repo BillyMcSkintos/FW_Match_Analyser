@@ -79,9 +79,9 @@ button.primary:hover{background:#6fb3d933}
 .opp-list::-webkit-scrollbar-thumb{background:#1a2540;border-radius:2px}
 
 .opp-row{display:flex;align-items:center;gap:6px;padding:4px 8px;border-left:2px solid transparent;cursor:pointer;transition:background .1s}
-.opp-row:hover,.opp-row.hovered{background:#0d1a2e}
-.opp-row.hovered.home{border-left-color:#6fb3d9}
-.opp-row.hovered.away{border-left-color:#e0925c}
+.opp-row:hover,.opp-row.hovered,.opp-row.pinned{background:#0d1a2e}
+.opp-row.hovered.home,.opp-row.pinned.home{border-left-color:#6fb3d9}
+.opp-row.hovered.away,.opp-row.pinned.away{border-left-color:#e0925c}
 .opp-row.goal-row .opp-min{color:#e8c468;font-weight:700}
 .opp-min{font-size:14px;font-weight:700;min-width:28px;text-align:right;color:#9fb0c4;font-family:monospace}
 .opp-score{font-size:12px;min-width:32px;text-align:right;color:#8a9ab0;font-family:monospace}
