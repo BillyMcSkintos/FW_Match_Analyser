@@ -9,6 +9,41 @@ Versions follow `MAJOR.MINOR.PATCH`:
 The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 `manifest.json`'s `version` field is canonical — `package.json` is kept in sync with it.
 
+## [0.4.0] — Fork-review adoptions: hardening + JPG export
+
+Six items cherry-picked from an independent hardening/feature pass on a fork of this
+project (`TheCrowsFW/FW_Match_Analyser`, `hardened-0.6.0` branch), adapted to this
+project's own architecture rather than merged wholesale. Not adopted from that same
+review: `chrome.storage.session` instead of `.local`, and dropping `tabs`/
+`host_permissions` for `activeTab`-only — both are genuine trade-offs left for a
+separate decision, not oversights.
+
+### Added
+- `static-audit.test.js` — a CI test that regex-scans the whole runtime bundle for
+  forbidden sinks (`fetch`, `XMLHttpRequest`, `WebSocket`, `eval`, `document.cookie`,
+  `chrome.cookies`, `chrome.downloads`, ...) and separately scans every repo file for
+  secret-shaped strings (private keys, bearer tokens, GitHub tokens). Turns the D11
+  "no external upload path" audit from a one-time manual check into a permanent,
+  automatic one.
+- `canonicalMatchUrl()` in `scraper.js` — strict URL validation (protocol, hostname,
+  no embedded credentials/port) gating `fwScrape()` on a genuine finalwhistle.org page
+  before it does any work.
+- Sender validation on `chrome.runtime.onMessage` (`isTrustedViewerSender()` in
+  `background.js`) — a `SCRAPE_PAGE` request must come from this extension's own
+  packaged `viewer.html`, not just any extension context.
+- Scrape-result shape validation (`sanitizeScrapeResult()` in `background.js`) applied
+  before a scrape is stored or returned — `scraper.js` runs injected into
+  FinalWhistle's own page, sharing that page's JS realm, so a compromised or just buggy
+  page could otherwise tamper with what comes back (including prototype pollution)
+  before it's trusted. Follows this project's existing graceful-degradation philosophy
+  (truncate oversized-but-valid fields with a warning, drop malformed-but-optional
+  fields like `statistics`) rather than rejecting the whole scrape on any violation.
+- **JPG export** — save the current pitch view, a pinned possession, or a whole-match
+  overview as a local JPG. Built as a self-contained SVG from already-parsed match
+  data (no page screenshot, no external image/font references) and rasterized
+  in-browser via `<canvas>`; reuses this project's own pitch/flow/highlight/timeline
+  renderers rather than porting the fork's parallel copies of them.
+
 ## [0.3.0] — Phase D: Engineering & Hardening
 
 This is the first release versioned under the convention above. It also covers the

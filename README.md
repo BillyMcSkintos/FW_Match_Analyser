@@ -30,6 +30,31 @@ statistics views.
   conceded shots with the earliest duel the attacker won outright.
 - **Narrative / Telemetry** — the raw scraped text, color-coded by quality
   tier and team, with the same timeline linking into it.
+- **JPG export** — save the current pitch view, a single pinned possession, or a
+  whole-match overview as a local JPG. Built as a self-contained SVG from
+  already-parsed match data (no page screenshot, no external image/font
+  references) and rasterized entirely in-browser via `<canvas>` — nothing is
+  uploaded anywhere.
+
+## Security
+
+This extension only ever reads a FinalWhistle match report page and writes to its own
+`chrome.storage.local` — there is no network request, no external upload path, and no
+data leaves the browser. That claim isn't just asserted:
+
+- `static-audit.test.js` mechanically scans the whole runtime bundle for forbidden
+  sinks (`fetch`, `XMLHttpRequest`, `WebSocket`, `eval`, `document.cookie`,
+  `chrome.cookies`, `chrome.downloads`, ...) and fails CI if any ever appears, and
+  separately scans every repo file for secret-shaped strings (private keys, bearer
+  tokens, GitHub tokens) before they'd ever reach `origin`.
+- `background.js` validates the *sender* of every `SCRAPE_PAGE` message (must be this
+  extension's own packaged `viewer.html`, not just "any extension context") and
+  sanitizes the shape of whatever `scraper.js` hands back before trusting or storing
+  it — `scraper.js` runs injected into FinalWhistle's own page, sharing that page's JS
+  realm, so a compromised or just buggy page could otherwise tamper with what comes
+  back before it's stored.
+- `scraper.js`'s `canonicalMatchUrl()` strictly validates the page URL (protocol,
+  hostname, no embedded credentials/port) before scraping anything at all.
 
 ## Evidence model
 
@@ -80,7 +105,10 @@ This isn't on the Chrome Web Store — load it as an unpacked extension:
 Click **Scrape** while a match report is open to pull in that match. **Load**
 reopens the last scrape from storage; **Clear** wipes it. Hover an opportunity
 row to preview it on the pitch, click to pin that view, click a timeline
-marker to jump straight to any moment in the match.
+marker to jump straight to any moment in the match. Pick a scope from the
+export dropdown (**Full view** / **Pinned possession** / **Overview**) and
+click **Save JPG** to download a local snapshot — the pinned-possession scope
+needs a possession clicked first.
 
 ## Architecture
 
@@ -141,7 +169,7 @@ npm run verify # both of the above — run this before opening a PR
 | `background.js` | Extension lifecycle — toolbar click handling, tab selection, script injection, `chrome.storage.local` persistence. |
 | `utils.js` | Genuinely shared small utilities only (used by both `background.js` and `viewer.js`) — not a general dumping ground. |
 | `fixtures/` | Sanitized narrative/telemetry/expected-invariant fixtures used by `integration.test.js`; see `fixtures/README.md` for scenario coverage and provenance. |
-| `*.test.js` | `parser.test.js`, `viewer.test.js`, `scraper.test.js`, `analytics.test.js` — one per layer above. `integration.test.js` — parser→analytics contract tests. `smoke.test.js` — the script-load-order check described above. |
+| `*.test.js` | `parser.test.js`, `viewer.test.js`, `scraper.test.js`, `analytics.test.js`, `background.test.js` — one per layer above. `integration.test.js` — parser→analytics contract tests. `smoke.test.js` — the script-load-order check described above. `static-audit.test.js` — the forbidden-sinks/secret-scan checks described in [Security](#security). |
 
 ### Contributing
 
