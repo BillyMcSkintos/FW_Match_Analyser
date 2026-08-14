@@ -103,6 +103,32 @@ function fwScrape() {
     result.errors.push('STATS_NOT_FOUND: activate Statistics tab first.');
   }
 
+  // ── 5. SANITY CHECK ──────────────────────────────────────────────────────
+  // A FinalWhistle DOM/selector change could make findNarrativeElement() grab an
+  // element that's missing opportunities (or telemetry that's out of sync with
+  // it), and parser.js's narrative↔stream pairing has no way to detect that on
+  // its own — it would just silently pair opportunities with the wrong stream
+  // data instead of visibly failing. Catch the coarse case here, right after
+  // scraping, rather than letting corrupted input propagate into analysis as
+  // confidently-wrong numbers. This can't see a CA sub-block miscount (parser.js
+  // splits those out of a normal opportunity's own token stream, not a separate
+  // O_*_START token), so a match is still exactly one real O_ token — this is a
+  // real 1:1 count, not an approximation.
+  if (result.narrative) {
+    const narrativeOppCount = (result.narrative.match(/^Opportunity for /gm) || []).length;
+    if (narrativeOppCount === 0) {
+      result.errors.push('NARRATIVE_NO_OPPORTUNITIES: narrative element was found but contains no "Opportunity for" lines.');
+    } else if (result.telemetry) {
+      const telemetryOppCount = (result.telemetry.match(/- O_\w+/g) || []).length;
+      if (telemetryOppCount !== narrativeOppCount) {
+        result.warnings.push(
+          `OPPORTUNITY_COUNT_MISMATCH: narrative has ${narrativeOppCount} opportunit${narrativeOppCount === 1 ? 'y' : 'ies'}, ` +
+          `telemetry has ${telemetryOppCount} opportunity start${telemetryOppCount === 1 ? '' : 's'} — some opportunities may end up paired with the wrong stream data.`
+        );
+      }
+    }
+  }
+
   result.ok = result.errors.length === 0;
   return result;
 }

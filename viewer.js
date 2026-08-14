@@ -260,10 +260,10 @@ function stepsToChain(opp) {
   const effectivePb   = pbDuel;
   const effectiveShot = shot || fkShot;
 
-  // A long ball skips the midfield contest entirely (see isLongBall below) — there's no
+  // A long ball skips the midfield contest entirely (see isLongBallSequence below) — there's no
   // real mid duel to have "won", but the ball did legitimately advance past that stage.
-  const isLongBall = !!opp.isLongBall;
-  const midWon = ['POSSESSION','WON'].includes(effectiveMid?.outcome) || isLongBall;
+  const isLongBallSequence = !!opp.isLongBallSequence;
+  const midWon = ['POSSESSION','WON'].includes(effectiveMid?.outcome) || isLongBallSequence;
 
   const pbReached  = !!(pbPass || effectivePb || sp);
   const pbAdvanced = pbReached && !['CLEARED','BLOCKED','GK_INTERCEPT','FOUL']
@@ -314,7 +314,7 @@ function stepsToChain(opp) {
     isCA,
     isPenalty: effectiveShot?.isPenalty || false,
     directShot,
-    isLongBall,
+    isLongBallSequence,
   };
 }
 
@@ -507,7 +507,7 @@ function renderHighlightChain(opp) {
   const Y      = side === 'home' ? PY : AY;
   const s      = [];
 
-  if (!c.sP && !c.mP && !c.isLongBall) return '';
+  if (!c.sP && !c.mP && !c.isLongBallSequence) return '';
 
   if (c.isCA) {
     const bx = side === 'home' ? VX.left - 8 : OVX.right + 8;
@@ -523,7 +523,7 @@ function renderHighlightChain(opp) {
   }
 
   let mxy;
-  if (c.isLongBall) {
+  if (c.isLongBallSequence) {
     // A long ball skips the midfield stage entirely (LB/RB delivers straight into the
     // box) — there's no start pass or mid duel to draw, just the passer, who becomes
     // the hub the PB stage below connects from.
@@ -679,7 +679,7 @@ function buildPassSummary(opp) {
   });
   if (c.pbP && c.rP) rows.push({
     from: nameTag(c.pbName, c.pbP), to: nameTag(c.rName, c.rP),
-    type: c.isLongBall ? 'Long Ball' : 'Mid Action', q: c.pbQ
+    type: c.isLongBallSequence ? 'Long Ball' : 'Mid Action', q: c.pbQ
   });
 
   if (!rows.length) return '';
@@ -1088,12 +1088,12 @@ function renderOppList(match) {
     const isGoal = opp.hasGoal;
     const c      = stepsToChain(opp);
 
-    const startCls = opp.isLongBall          ? 'st-long'
+    const startCls = opp.isLongBallSequence          ? 'st-long'
                    : opp.startType === 'GK'  ? 'st-gk'
                    : opp.startType === 'MID' ? 'st-mid'
                    : opp.isCounterAttack     ? 'st-ca'
                    : 'st-def';
-    const startLbl = opp.isLongBall ? 'LONG' : (opp.startType || '?');
+    const startLbl = opp.isLongBallSequence ? 'LONG' : (opp.startType || '?');
 
     const outCol = OUT_COL[opp.finalOutcome] || '#8a9ab0';
     const isPenalty = opp.steps.some(s => s.isPenalty);
@@ -1174,14 +1174,13 @@ function renderTypeDistribution(title, counts) {
   });
   return html;
 }
-function renderLongBallSummary(opportunities) {
-  // isLongBall describes the opportunity's own structural start (a back/wing-back
-  // delivering straight into the box), which is unambiguous and always belongs to
-  // opp.teamSide — a counter-attack can't happen on the very first step, so this part
-  // isn't affected by the attribution bug the shot/goal counts below are guarding against.
-  const home = opportunities.filter(o => o.teamSide === 'home' && o.isLongBall);
-  const away = opportunities.filter(o => o.teamSide === 'away' && o.isLongBall);
-  if (!home.length && !away.length) return '';
+// isLongBallSequence describes the opportunity's own structural start (a back/wing-back
+// delivering straight into the box), which is unambiguous and always belongs to
+// opp.teamSide — a counter-attack can't happen on the very first step, so that part isn't
+// affected by the attribution bug the shot/goal counts below are guarding against.
+function computeLongBallStats(opportunities) {
+  const home = opportunities.filter(o => o.teamSide === 'home' && o.isLongBallSequence);
+  const away = opportunities.filter(o => o.teamSide === 'away' && o.isLongBallSequence);
   // A shot/goal only counts toward "→ shot"/"→ goal" if it belongs to the SAME side
   // that played the long ball. If the sequence turned into a counter-attack and the
   // opponent shot or scored instead, that's a long ball that was lost, not one that
@@ -1192,11 +1191,19 @@ function renderLongBallSummary(opportunities) {
     s.outcome === 'GOAL' && (s.attackingSide || o.teamSide) === o.teamSide);
   const shots = arr => arr.filter(hasOwnShot).length;
   const goals = arr => arr.filter(hasOwnGoal).length;
+  return {
+    home: { attempted: home.length, shots: shots(home), goals: goals(home) },
+    away: { attempted: away.length, shots: shots(away), goals: goals(away) },
+  };
+}
+function renderLongBallSummary(opportunities) {
+  const s = computeLongBallStats(opportunities);
+  if (!s.home.attempted && !s.away.attempted) return '';
   let html = `<div class="dist-title">Long Balls</div>`;
-  html += statBarRow('attempted', home.length, away.length, home.length, away.length);
-  html += statBarRow('→ shot', shots(home), shots(away), shots(home), shots(away));
-  if (goals(home) || goals(away))
-    html += statBarRow('→ goal', goals(home), goals(away), goals(home), goals(away));
+  html += statBarRow('attempted', s.home.attempted, s.away.attempted, s.home.attempted, s.away.attempted);
+  html += statBarRow('→ shot', s.home.shots, s.away.shots, s.home.shots, s.away.shots);
+  if (s.home.goals || s.away.goals)
+    html += statBarRow('→ goal', s.home.goals, s.away.goals, s.home.goals, s.away.goals);
   return html;
 }
 
@@ -1242,7 +1249,7 @@ function renderFWDelivery(opportunities) {
   return html;
 }
 
-// ── Offense vs. defense scatter ──────────────────────────────────────────────────
+// ── Execution quality scatter + chain pressure ────────────────────────────────────
 // The old single "chain total" metric silently summed attacker-side and defender-side
 // numbers together — e.g. a brilliant TACKLE (good for the defense) counted the exact
 // same direction as a brilliant PASS (good for the attack), so a high "total" could mean
@@ -1252,31 +1259,42 @@ function renderFWDelivery(opportunities) {
 //   defense: assistance, tackle, gkSave — the defending side's resistance (assistance is
 //     the defender's support per the manual/narrative: "X got assistance, and was close"
 //     describes the DEFENDER's positioning, not the attacker's)
-// Plotting one dot per opportunity on those two axes, colored by outcome, shows directly
-// whether goals cluster where offense is high and defense is low — the actual question
-// "does chain quality predict goals" is asking, instead of one ambiguous number.
+// A second bug beyond attribution: this used to be a SUM across every step in the chain,
+// so a longer chain scored higher even at identical per-action execution — a 3-action
+// chain averaging 67 and a 5-action chain averaging 64 would plot as if the 5-action one
+// were dramatically stronger, purely because it had more actions to add up. Averaging
+// instead of summing removes that length bias; the sum is still meaningful on its own
+// terms (more sustained buildup IS more pressure applied, not better execution) so it's
+// kept as a separate, explicitly-labeled stat below instead of being conflated with
+// quality in the same number.
 const OFFENSE_KEYS = ['pass', 'reception', 'shot'];
 const DEFENSE_KEYS = ['assistance', 'tackle', 'gkSave'];
 function sumStepValues(steps, keys) {
-  let total = 0;
+  let total = 0, count = 0;
   steps.forEach(s => {
     const v = s.values || {};
-    keys.forEach(k => { if (v[k]?.value != null) total += v[k].value; });
+    keys.forEach(k => { if (v[k]?.value != null) { total += v[k].value; count++; } });
   });
-  return total;
+  return { total, count };
+}
+// The side a chain's execution should be attributed to — whoever's step ended the
+// sequence (the shot, or the last duel if it never reached one), not opp.teamSide, which
+// names the wrong team for anything after a counter-attack boundary.
+function terminalSideOf(opp) {
+  const finalStep = opp.steps[opp.steps.length - 1];
+  return finalStep?.attackingSide || opp.teamSide;
 }
 function renderQualityScatter(opportunities) {
   const pts = opportunities.map(o => {
-    // Color/attribute the dot by whoever's step ended the sequence (the shot, or the
-    // last duel if it never reached one) rather than opp.teamSide, and sum offense/
-    // defense only from steps on that same side — after a counter-attack, the steps
-    // before the CA boundary belong to the OTHER team, and summing both sides' values
-    // into one dot would mix two different teams' execution into a single number.
-    const finalStep = o.steps[o.steps.length - 1];
-    const side = finalStep?.attackingSide || o.teamSide;
+    // Sum offense/defense only from steps on the terminal side — after a counter-attack,
+    // the steps before the CA boundary belong to the OTHER team, and summing both sides'
+    // values into one dot would mix two different teams' execution into a single number.
+    const side = terminalSideOf(o);
     const sideSteps = o.steps.filter(s => (s.attackingSide || o.teamSide) === side);
+    const offRes = sumStepValues(sideSteps, OFFENSE_KEYS), defRes = sumStepValues(sideSteps, DEFENSE_KEYS);
     return {
-      off: sumStepValues(sideSteps, OFFENSE_KEYS), def: sumStepValues(sideSteps, DEFENSE_KEYS),
+      off: offRes.count ? offRes.total / offRes.count : 0,
+      def: defRes.count ? defRes.total / defRes.count : 0,
       goal: o.hasGoal, shot: o.hasShot, side,
     };
   });
@@ -1302,14 +1320,39 @@ function renderQualityScatter(opportunities) {
     const op  = p.goal ? .95 : p.shot ? .55 : .28;
     s.push(`<circle cx="${x(p.off)}" cy="${y(p.def)}" r="${r}" fill="${col}" opacity="${op}"/>`);
   });
-  s.push(`<text x="${(PL+W-PR)/2}" y="${H-8}" text-anchor="middle" font-size="9" fill="#5a6f8c" font-family="monospace" letter-spacing="1">OFFENSE (pass + reception + shot) →</text>`);
-  s.push(`<text x="0" y="0" text-anchor="middle" font-size="9" fill="#5a6f8c" font-family="monospace" letter-spacing="1" transform="translate(11 ${(PT+H-PB)/2}) rotate(-90)">DEFENSE (assist + tackle + save) →</text>`);
+  s.push(`<text x="${(PL+W-PR)/2}" y="${H-8}" text-anchor="middle" font-size="9" fill="#5a6f8c" font-family="monospace" letter-spacing="1">AVG OFFENSE (pass + reception + shot) →</text>`);
+  s.push(`<text x="0" y="0" text-anchor="middle" font-size="9" fill="#5a6f8c" font-family="monospace" letter-spacing="1" transform="translate(11 ${(PT+H-PB)/2}) rotate(-90)">AVG DEFENSE (assist + tackle + save) →</text>`);
 
-  return `<div class="dist-title">Offense vs Defense</div>
-    <div class="qt-hint">One dot per opportunity. X = attacking side's execution, Y = defending side's resistance
-      (assistance/tackle/save — higher is <em>better for the defense</em>). Gold = goal, bright = reached a shot,
-      faint = didn't. If the theory holds, gold dots should cluster bottom-right — strong offense, weak defense.</div>
+  return `<div class="dist-title">Execution Quality</div>
+    <div class="qt-hint">One dot per opportunity. X/Y are the AVERAGE value per action on the attacking/defending
+      side (not a total — a longer chain doesn't score higher here just for having more actions in it; see Chain
+      Pressure below for the volume-of-buildup version of this). Gold = goal, bright = reached a shot, faint =
+      didn't. If the theory holds, gold dots should cluster bottom-right — strong offense, weak defense.</div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:#050b14;border-radius:6px;border:1px solid #1a2540">${s.join('')}</svg>`;
+}
+
+// "Pressure" = how much total attacking value a team's successful (shot-reaching)
+// sequences generate, on average — deliberately NOT normalized by chain length the way
+// Execution Quality above is, since a team sustaining a longer buildup before a shot IS
+// applying more pressure, not executing better. The two metrics are answering different
+// questions on purpose, and are now both available instead of the old single number that
+// conflated them.
+function renderChainPressure(opportunities) {
+  const totals = { home: [], away: [] };
+  opportunities.forEach(o => {
+    if (!o.hasShot) return;
+    const side = terminalSideOf(o);
+    if (!totals[side]) return;
+    const sideSteps = o.steps.filter(s => (s.attackingSide || o.teamSide) === side);
+    totals[side].push(sumStepValues(sideSteps, OFFENSE_KEYS).total);
+  });
+  if (!totals.home.length && !totals.away.length) return '';
+  const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+  const homeAvg = avg(totals.home), awayAvg = avg(totals.away);
+  return `<div class="dist-title">Chain Pressure</div>
+    <div class="qt-hint">Average TOTAL attacking value (summed across the whole chain, not averaged per action)
+      among sequences that reached a shot — a volume-of-buildup signal, distinct from Execution Quality above.</div>
+    ${statBarRow('avg. chain value', homeAvg, awayAvg, homeAvg, awayAvg)}`;
 }
 
 // The site's own stats table comes back as one flat, alphabetically-ish ordered dump —
@@ -1370,6 +1413,7 @@ function renderStats(stats, homeTeam, awayTeam, opportunities) {
     html += renderLongBallSummary(opportunities);
     html += renderFWDelivery(opportunities);
     html += renderQualityScatter(opportunities);
+    html += renderChainPressure(opportunities);
   }
   html += '</div>';
   return html;

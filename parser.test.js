@@ -169,7 +169,7 @@ test('long ball: PB_PASS with no preceding midfield phase, from a back position'
   assert.equal(match.warnings.length, 0);
   const opp = match.opportunities[0];
   assert.deepEqual(stepTypes(opp), ['PB_PASS', 'PB_DUEL', 'SHOT']);
-  assert.equal(opp.isLongBall, true);
+  assert.equal(opp.isLongBallSequence, true);
 });
 
 test('direct free-kick shot: no pass line, FK_SHOT only', () => {
@@ -914,7 +914,7 @@ test('long ball intercepted by the goalkeeper', () => {
   const opp = match.opportunities[0];
   // A long ball is a PB_PASS with no preceding midfield phase — absence of a midfield
   // duel here is valid, not malformed.
-  assert.equal(opp.isLongBall, true);
+  assert.equal(opp.isLongBallSequence, true);
   assert.deepEqual(stepTypes(opp), ['PB_PASS', 'PB_DUEL']);
   assert.equal(outcomeOf(opp, 'PB_DUEL'), 'GK_INTERCEPT');
 });
@@ -989,4 +989,65 @@ test('multiple opportunities in the same minute stay separate and correctly orde
   assert.equal(match.opportunities[0].minute, 5);
   assert.equal(match.opportunities[1].team, 'Away Team');
   assert.equal(match.opportunities[1].minute, 5);
+  // Home's and Away's opportunities here are different (minute, side) keys — each side
+  // only ever had one possible stream block to pair with, so there was no cursor-order
+  // ambiguity to report; both should read 'exact', not 'uncertain'.
+  assert.equal(match.opportunities[0].streamMatchConfidence, 'exact');
+  assert.equal(match.opportunities[1].streamMatchConfidence, 'exact');
+});
+
+test('two same-team same-minute opportunities report uncertain stream-match confidence', () => {
+  // Same (minute, side) key twice — pairing the second one to the second stream block is
+  // only correct because both blocks happen to parse cleanly in order; if an earlier block
+  // had gone missing or malformed, this opportunity would silently pair with the wrong
+  // one. streamMatchConfidence exists specifically to flag that this pairing was picked
+  // by cursor order among multiple candidates, not because it was the only possible match.
+  const narrative = [
+    'Minute 12',
+    'Opportunity for Home Team.',
+    'Midfield',
+    'Player A [RB] attempted low weak pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Opportunity for Home Team.',
+    'Midfield',
+    'Player D [RB] attempted low good pass to Player E [CM]',
+    'Player F [DM] got poor assistance, and was close.',
+    'Player E [CM] made excellent reception and took control of the ball.',
+  ].join('\n');
+  const telemetry = [
+    "12' - H - O_MID_START",
+    "12' - H - V_PASS - (30)",
+    "12' - A - V_ASSISTANCE - (40)",
+    "12' - H - V_RECEPTION - (25)",
+    "12' - A - V_TACKLING - (70)",
+    "12' - H - O_MID_START",
+    "12' - H - V_PASS - (55)",
+    "12' - A - V_ASSISTANCE - (20)",
+    "12' - H - V_RECEPTION - (65)",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative);
+  assert.equal(match.opportunities.length, 2);
+  assert.equal(match.opportunities[0].streamMatchConfidence, 'uncertain');
+  assert.equal(match.opportunities[1].streamMatchConfidence, 'uncertain');
+  // The ambiguity is surfaced through the same warnings the UI already shows, one
+  // aggregate line rather than one per opportunity.
+  assert.equal(match.warnings.length, 1);
+  assert.match(match.warnings[0], /2 opportunities shared a minute\+side/);
+});
+
+test('an opportunity with no matching stream block reports none confidence', () => {
+  const narrative = [
+    'Minute 40',
+    'Opportunity for Home Team.',
+    'Midfield',
+    'Player A [RB] attempted low weak pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const match = parseMatch('', narrative); // no telemetry at all for this minute
+  assert.equal(match.opportunities[0].streamMatchConfidence, 'none');
 });

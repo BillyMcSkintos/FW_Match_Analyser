@@ -766,6 +766,14 @@ function parseMatch(streamText, narrativeText) {
     const block = pool[blockCursors[key]] || null;
     blockCursors[key]++;
 
+    // How sure are we this opportunity got paired with the RIGHT stream block? If only
+    // one candidate existed for this (minute, side), there was nothing to get wrong. If
+    // several did, pairing fell to blockCursors' next-in-line order — correct as long as
+    // every real block parsed cleanly, but a single missing/malformed one upstream would
+    // silently shift every later same-(minute,side) pairing without any other symptom.
+    // Surfacing that here beats a confidently-wrong number with no way to tell.
+    const streamMatchConfidence = !block ? 'none' : pool.length > 1 ? 'uncertain' : 'exact';
+
     const allStreamPhases = block
       ? [...block.phases, ...(block.counterAttack?.phases || [])]
       : [];
@@ -786,7 +794,7 @@ function parseMatch(streamText, narrativeText) {
     // just an aerial duel. Structurally that's an opportunity whose first step is a
     // PB_PASS with no preceding START_PASS/MID_DUEL at all.
     const firstStep = steps[0];
-    const isLongBall = firstStep?.stepType === 'PB_PASS'
+    const isLongBallSequence = firstStep?.stepType === 'PB_PASS'
       && ['LB','RB','LWB','RWB'].includes(firstStep.from?.position);
 
     opportunities.push({
@@ -794,19 +802,31 @@ function parseMatch(streamText, narrativeText) {
       team:            narOpp.team,
       teamSide:        narOpp.teamSide,
       startType:       block?.startType || null,
-      isLongBall,
+      isLongBallSequence,
       isCounterAttack: steps.some(s => s.isCA),
       scoreBefore:     null,
       scoreAfter:      null,
       hasGoal, hasShot, hasCard,
       finalOutcome:    finalStep?.outcome || null,
       steps,
-      rawLines:        narOpp.rawLines || [],
+      rawLines:            narOpp.rawLines || [],
+      streamMatchConfidence,
+      narrativePhaseCount: narOpp.phases.length,
+      streamPhaseCount:    allStreamPhases.length,
     });
   }
 
   annotateScores(opportunities, scoreByMinute);
   const playerRegistry = buildPlayerRegistry(opportunities, tacticalEvents);
+
+  // Surface stream-match confidence through the same warnings the UI already shows,
+  // rather than leaving it as a data field nobody looks at. One aggregate line per
+  // category instead of one per opportunity, so a match with many uncertain pairings
+  // doesn't bury the warnings banner.
+  const noneCount = opportunities.filter(o => o.streamMatchConfidence === 'none').length;
+  const uncertainCount = opportunities.filter(o => o.streamMatchConfidence === 'uncertain').length;
+  if (noneCount) warnings.push(`${noneCount} opportunit${noneCount === 1 ? 'y has' : 'ies have'} no matching telemetry — values for ${noneCount === 1 ? 'it' : 'them'} are narrative-only.`);
+  if (uncertainCount) warnings.push(`${uncertainCount} opportunit${uncertainCount === 1 ? 'y' : 'ies'} shared a minute+side with another and may be paired with the wrong telemetry block if an earlier one was malformed.`);
 
   return { meta: { homeTeam, awayTeam, finalScore }, playerRegistry, opportunities, tacticalEvents, warnings };
 }

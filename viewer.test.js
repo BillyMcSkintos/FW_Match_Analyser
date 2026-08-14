@@ -160,3 +160,136 @@ test('counter-attacking goal is credited to the countering team in computePhaseS
   assert.equal(window7090.away.goals, 1, 'the goal belongs to away, who actually scored it');
   assert.equal(window7090.home.goals, 0, 'home must not be credited with a goal it didn\'t score');
 });
+
+test('counter-attacking pass type is credited to the countering team in buildTypeCounts', () => {
+  const ctx = loadViewerContext();
+  const match = ctx.parseMatch(CA_TELEMETRY, CA_NARRATIVE);
+  const counts = ctx.buildTypeCounts(match.opportunities,
+    ['START_PASS', 'PB_PASS', 'SP_PASS', 'FK_PASS'], ctx.classifyPassType);
+  // The pre-CA START_PASS belongs to home; the post-CA START_PASS + PB_PASS belong to away.
+  assert.equal(counts.home.normal, 1, 'only the pre-CA start pass is home\'s');
+  assert.equal(counts.away.normal, 2, 'the post-CA start pass and box pass both belong to away');
+});
+
+test('goal scorer teamSide differs from opp.teamSide via buildScorers', () => {
+  const ctx = loadViewerContext();
+  const match = ctx.parseMatch(CA_TELEMETRY, CA_NARRATIVE);
+  const scorers = ctx.buildScorers(match);
+  assert.equal(scorers.length, 1);
+  assert.equal(scorers[0].teamSide, 'away', 'the scorer belongs to the team that countered');
+  assert.equal(match.opportunities[0].teamSide, 'home', 'not the opportunity\'s nominal owner');
+});
+
+test('phase boundary minutes land in the correct window', () => {
+  const ctx = loadViewerContext();
+  // "Next phase starts AT the boundary minute" — 30/45/70 belong to the window that
+  // starts there, not the one that ends there; 90 belongs to the last window since
+  // there's no window starting at 90.
+  assert.equal(ctx.phaseIndexOf(0), 0);
+  assert.equal(ctx.phaseIndexOf(29), 0);
+  assert.equal(ctx.phaseIndexOf(30), 1, 'minute 30 starts the 30–45 window, not the 0–30 one');
+  assert.equal(ctx.phaseIndexOf(44), 1);
+  assert.equal(ctx.phaseIndexOf(45), 2, 'minute 45 starts the 45–70 window');
+  assert.equal(ctx.phaseIndexOf(69), 2);
+  assert.equal(ctx.phaseIndexOf(70), 3, 'minute 70 starts the 70–90 window');
+  assert.equal(ctx.phaseIndexOf(90), 3, 'minute 90 has no window of its own — falls into the last one');
+});
+
+test('a long-ball sequence that becomes a conceded counter-attack goal is not counted as the long-ball team\'s goal', () => {
+  const ctx = loadViewerContext();
+  // Home plays a long ball into the box, loses the PB duel, Away counters and scores —
+  // structurally identical to the existing "counter-attack originating from a penalty-box
+  // duel loss" parser test, just starting with a long ball (PB_PASS from a back position,
+  // no Midfield phase) instead of a normal midfield-won sequence.
+  const narrative = [
+    'Minute 55',
+    'Opportunity for Home Team.',
+    'Penalty Box',
+    'Player A [LB] attempted high risky pass to Player B [FW]',
+    'Player C [CB] got decent assistance, and was in decent position.',
+    'Player B [FW] made weak reception, Player C [CB] made superb tackle.',
+    'Player C [CB] cleared the ball to safety.',
+    'Counter attack',
+    'Midfield',
+    'Player C [CB] attempted low good pass to Player D [FW]',
+    'Player E [CM] got decent assistance, and was close.',
+    'Player D [FW] made excellent reception and took control of the ball.',
+    'Penalty Box',
+    'Player D [FW] attempted low decent pass to Player F [LW]',
+    'Player G [CB] got good assistance, and was in decent position.',
+    'Player F [LW] made good reception, Player G [CB] made weak tackle.',
+    'Player F [LW] took control of the ball.',
+    'Goal Attempt',
+    'Player F [LW] made superb shot.',
+    'Player Z [GK] was fooled.',
+    'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "55' - H - O_DEF_START",
+    "55' - H - V_PASS - (60)",
+    "55' - A - V_ASSISTANCE - (40)",
+    "55' - H - V_RECEPTION - (35)",
+    "55' - A - V_TACKLING - (75)",
+    "55' - A - E_COUNTER_ATTACK",
+    "55' - A - V_PASS - (55)",
+    "55' - H - V_ASSISTANCE - (35)",
+    "55' - A - V_RECEPTION - (65)",
+    "55' - A - V_PASS - (50)",
+    "55' - H - V_ASSISTANCE - (40)",
+    "55' - A - V_RECEPTION - (60)",
+    "55' - H - V_TACKLING - (30)",
+    "55' - A - V_SHOT - (75)",
+    "55' - H - V_REFLEX - (20)",
+    "55' - A - E_GOAL",
+  ].join('\n');
+
+  const match = ctx.parseMatch(telemetry, narrative);
+  const opp = match.opportunities[0];
+  assert.equal(opp.isLongBallSequence, true);
+  assert.equal(opp.teamSide, 'home');
+  assert.equal(opp.hasGoal, true, 'the opportunity did contain a goal');
+
+  const stats = ctx.computeLongBallStats(match.opportunities);
+  assert.equal(stats.home.attempted, 1, 'home is still credited with attempting the long ball');
+  assert.equal(stats.home.goals, 0, 'but not with a goal it didn\'t score — away countered and scored instead');
+  assert.equal(stats.away.attempted, 0, 'away never attempted a long ball here');
+});
+
+test('stats functions handle empty and null-heavy input without throwing', () => {
+  const ctx = loadViewerContext();
+  assert.doesNotThrow(() => ctx.buildTypeCounts([], ['SHOT'], ctx.classifyShotType));
+  assert.doesNotThrow(() => ctx.buildFWDelivery([]));
+  assert.doesNotThrow(() => ctx.computeLongBallStats([]));
+  assert.doesNotThrow(() => ctx.computePhaseStats({ opportunities: [] }));
+  assert.doesNotThrow(() => ctx.computePhaseStats(null));
+  assert.doesNotThrow(() => ctx.buildScorers({ opportunities: [] }));
+  assert.doesNotThrow(() => ctx.buildScorers(null));
+
+  // A step whose players/values never resolved (e.g. a phase the narrative described but
+  // the parser couldn't fully populate) shouldn't crash aggregation just because a field
+  // that's normally present is missing.
+  const bareOpp = {
+    minute: 10, teamSide: 'home', hasGoal: false, hasShot: false, isLongBallSequence: false,
+    steps: [{ stepType: 'SHOT', outcome: null, values: {}, shooter: null, attackingSide: null }],
+  };
+  assert.doesNotThrow(() => ctx.buildTypeCounts([bareOpp], ['SHOT'], ctx.classifyShotType));
+  assert.doesNotThrow(() => ctx.computePhaseStats({ opportunities: [bareOpp] }));
+});
+
+test('malicious player/team names are escaped, not injected as HTML', () => {
+  const ctx = loadViewerContext();
+  const payload = '<script>alert(1)</script>';
+  const html = ctx.escapeHtml(payload);
+  assert.ok(!html.includes('<script>'), 'the raw tag must not survive escaping');
+  assert.ok(html.includes('&lt;script&gt;'), 'it should be escaped instead');
+
+  // nm() is what most player-name rendering in the app goes through — but it only ever
+  // renders the LAST word of a name (name.split(' ').pop(), matching how the whole app
+  // shows last-name-only), so a payload with spaces in it gets truncated away before
+  // reaching escapeHtml at all and this test would prove nothing. Keep the malicious part
+  // in a single space-free "word" so it actually exercises the escaping path.
+  const attackName = 'Bob "><img/src=x/onerror=alert(1)>';
+  const out = ctx.nm({ name: attackName, position: 'FW' }, null);
+  assert.ok(!out.includes('<img'), 'an unescaped tag must not reach the output');
+  assert.ok(out.includes('&lt;img'), 'it should appear escaped instead');
+});
