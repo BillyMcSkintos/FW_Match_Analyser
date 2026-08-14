@@ -1379,6 +1379,70 @@ function renderPhaseStats(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SQUAD  — tiredness/subs/position/mentality & style changes, split by team
+// ─────────────────────────────────────────────────────────────────────────────
+// Tiredness reports aren't single events the way a substitution is — the same player can
+// be reported tired more than once over the match (tired at 40', very tired at 70') — so
+// unlike the other three categories these are grouped per player, each showing their full
+// sequence of reports, rather than listed as one flat chronological row per event.
+function groupTirednessByPlayer(events) {
+  const byPlayer = new Map();
+  events.forEach(ev => {
+    const key = ev.player?.name || '?';
+    if (!byPlayer.has(key)) byPlayer.set(key, { player: ev.player, entries: [] });
+    byPlayer.get(key).entries.push({ minute: ev.minute, level: ev.level });
+  });
+  const groups = [...byPlayer.values()];
+  groups.forEach(g => g.entries.sort((a, b) => (a.minute ?? 0) - (b.minute ?? 0)));
+  groups.sort((a, b) => (a.entries[0]?.minute ?? 0) - (b.entries[0]?.minute ?? 0));
+  return groups;
+}
+function renderTirednessGroup(g, col) {
+  // Same 😴/🫩 convention statusDetail() already uses for the tired/very-tired badge
+  // shown next to a player's name elsewhere in the app.
+  const badges = g.entries.map(e => {
+    const icon = e.level === 'VERY_TIRED' ? '😴' : '🫩';
+    return `<span class="tac-impact">${icon}${e.minute != null ? ' ' + e.minute + "'" : ''}</span>`;
+  }).join(' ');
+  return `<div class="tac-row" style="border-left-color:${col}">
+    <span class="tac-text"><span class="p-nm" style="color:${col}">${lastName(g.player)}</span> <span class="p-pos">[${escapeHtml(g.player?.position) || '?'}]</span></span>
+    <span style="margin-left:auto;white-space:nowrap">${badges}</span>
+  </div>`;
+}
+
+function renderSquadColumn(match, side) {
+  const events = (match.tacticalEvents || []).filter(ev => ev.teamSide === side);
+  const byMinute = (a, b) => (a.minute ?? 0) - (b.minute ?? 0);
+
+  const tiredness   = groupTirednessByPlayer(events.filter(ev => ev.type === 'TIREDNESS'));
+  const subs        = events.filter(ev => ev.type === 'SUBSTITUTION').sort(byMinute);
+  const posChanges  = events.filter(ev => ev.type === 'POSITION_CHANGE').sort(byMinute);
+  const mentaStyle  = events.filter(ev => ev.type === 'MENTALITY_CHANGE' || ev.type === 'STYLE_CHANGE').sort(byMinute);
+
+  const teamName = side === 'home' ? (match.meta?.homeTeam || 'Home') : (match.meta?.awayTeam || 'Away');
+  const col = side === 'home' ? HC : AC;
+  const section = (title, count, rowsHtml, emptyLabel) =>
+    `<div class="dist-title">${escapeHtml(title)} (${count})</div>` +
+    (count ? rowsHtml : `<div class="qt-hint">${emptyLabel}</div>`);
+
+  let html = `<div style="flex:1;min-width:0">`;
+  html += `<div class="ps-team" style="color:${col};border-color:${col}44">${escapeHtml(teamName)}</div>`;
+  html += section('Tiredness', tiredness.length, tiredness.map(g => renderTirednessGroup(g, col)).join(''), 'No tiredness reports.');
+  html += section('Substitutions', subs.length, subs.map(renderTacticalRow).join(''), 'No substitutions.');
+  html += section('Position Changes', posChanges.length, posChanges.map(renderTacticalRow).join(''), 'No position changes.');
+  html += section('Mentality & Style', mentaStyle.length, mentaStyle.map(renderTacticalRow).join(''), 'No mentality/style changes.');
+  html += `</div>`;
+  return html;
+}
+
+function renderSquadTab(match) {
+  if (!match?.tacticalEvents) return '<div class="no-data" style="padding:20px 0">No match data.</div>';
+  return `<div style="padding:8px;overflow-y:auto;flex:1;display:flex;gap:16px">` +
+    renderSquadColumn(match, 'home') + renderSquadColumn(match, 'away') +
+    `</div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN RENDER
 // ─────────────────────────────────────────────────────────────────────────────
 let _match       = null;
@@ -1572,6 +1636,7 @@ function render(scrape) {
   // Stats
   $('panel-stats').innerHTML = renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities);
   $('panel-phases').innerHTML = renderPhaseStats(_match);
+  $('panel-squad').innerHTML = renderSquadTab(_match);
 
   // Pitch — rebuild entire SVG as one string (SVG namespace safe)
   try {
