@@ -7,13 +7,13 @@
  */
 importScripts('utils.js');
 
-// D11 (Phase D, storage hardening): tags the shape of what gets persisted to
-// chrome.storage.local, so a future change to that shape has something to check against
-// instead of guessing whether an old stored object predates it. viewer.js's render()
-// does not currently read this — it already tolerates a completely bare
-// {narrative, telemetry, homeTeam, awayTeam} object with no other fields at all (see
-// viewer.test.js's old-scrape compatibility tests) — this exists purely so a REAL future
-// migration has a version to branch on, without introducing a migration framework now.
+// Tags the shape of what gets persisted to chrome.storage.local, so a future change to
+// that shape has something to check against instead of guessing whether an old stored
+// object predates it. viewer.js's render() does not currently read this — it already
+// tolerates a completely bare {narrative, telemetry, homeTeam, awayTeam} object with no
+// other fields at all (see viewer.test.js's old-scrape compatibility tests) — this
+// exists purely so a real future migration has a version to branch on, without
+// introducing a migration framework now.
 const LASTSCRAPE_SCHEMA_VERSION = 1;
 
 chrome.action.onClicked.addListener(async () => {
@@ -33,13 +33,12 @@ chrome.action.onClicked.addListener(async () => {
   }
 });
 
-// Reviewed against a fork's independent hardening pass, which validated the SENDER of
-// every runtime message, not just its shape. chrome.runtime.onMessage already only
-// fires for this extension's own contexts by default (no externally_connectable is
-// declared in manifest.json, so arbitrary web pages/other extensions can't reach this
-// listener at all) — this narrows it further, to specifically the packaged viewer page,
-// as defense-in-depth against any future content script or extension page this project
-// might add later that shouldn't be able to trigger a scrape.
+// chrome.runtime.onMessage already only fires for this extension's own contexts by
+// default (no externally_connectable is declared in manifest.json, so arbitrary web
+// pages/other extensions can't reach this listener at all) — this narrows it further,
+// to specifically the packaged viewer page, as defense-in-depth against any future
+// content script or extension page this project might add later that shouldn't be able
+// to trigger a scrape.
 function isTrustedViewerSender(sender) {
   if (!sender || sender.id !== chrome.runtime.id) return false;
   if (!Number.isSafeInteger(sender.tab?.id)) return false;
@@ -85,21 +84,18 @@ async function scrapeActiveTab() {
   return runScraper(fwTab.id);
 }
 
-// Reviewed against a fork's independent hardening pass (contracts.js), which validated
-// the shape of everything scraper.js handed back before trusting it. scraper.js runs
-// INJECTED INTO FinalWhistle's own page (chrome.scripting.executeScript), sharing that
-// page's JS realm — a compromised or just buggy page could tamper with what comes back,
-// including prototype-polluting the object, before background.js stores or returns it.
+// scraper.js runs INJECTED INTO FinalWhistle's own page (chrome.scripting.executeScript),
+// sharing that page's JS realm — a compromised or just buggy page could tamper with what
+// comes back, including prototype-polluting the object, before background.js stores or
+// returns it. sanitizeScrapeResult() below (used by runScraper()) is the guard against
+// that, applied to every scrape before it's persisted or handed back to the caller.
 //
-// Deliberately lighter than that fork's version: no flow/nonce messaging protocol (a
-// much bigger, currently-unwarranted redesign of how background.js and viewer.js talk
-// to each other), and it DEGRADES rather than rejects wherever the data is merely
-// oversized but still usable — narrative/telemetry get truncated with a warning, not
-// thrown away, matching this project's existing "a technicality shouldn't sink an
-// otherwise-usable scrape" philosophy (scraper.js's STATS_NOT_FOUND is a warning, not a
-// fatal error, for the same reason). Only a fundamentally hostile shape — not a plain
-// record at all, or a core field with a type that makes no sense whatsoever — is
-// rejected outright.
+// It DEGRADES rather than rejects wherever the data is merely oversized but still
+// usable — narrative/telemetry get truncated with a warning, not thrown away, matching
+// this project's "a technicality shouldn't sink an otherwise-usable scrape" philosophy
+// (scraper.js's STATS_NOT_FOUND is a warning, not a fatal error, for the same reason).
+// Only a fundamentally hostile shape — not a plain record at all, or a core field with a
+// type that makes no sense whatsoever — is rejected outright.
 const SCRAPE_LIMITS = Object.freeze({
   narrativeChars: 250_000,
   telemetryChars: 250_000,

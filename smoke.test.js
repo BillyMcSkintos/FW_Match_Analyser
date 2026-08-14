@@ -1,6 +1,6 @@
 'use strict';
-// Phase D (D2) — script-load-order smoke test. MANDATORY: this protects against a
-// production-breaking failure class node --check cannot see.
+// Script-load-order smoke test. MANDATORY: this protects against a production-breaking
+// failure class node --check cannot see.
 //
 // Classic <script src="..."> tags loaded into the same page share ONE global lexical
 // environment. A duplicate top-level `const`/`let` name across two files only throws
@@ -83,10 +83,9 @@ test('viewer.html\'s own script order loads cleanly into one shared context, wit
     }
   }
 
-  // Public surface each layer is expected to expose to the next, per D1's module
-  // ownership (parser.js → analytics.js → viewer.js). Missing any of these means a
-  // script silently failed to define what a later script depends on, even if nothing
-  // threw outright.
+  // Public surface each layer is expected to expose to the next (parser.js →
+  // analytics.js → viewer.js). Missing any of these means a script silently failed to
+  // define what a later script depends on, even if nothing threw outright.
   const expectedGlobals = [
     'parseMatch', 'tacticalStateAt', 'buildTacticalPhases', 'phaseIdAt',       // parser.js
     'opportunityFunnel', 'phasePerformance', 'defensiveFailureChains',        // analytics.js

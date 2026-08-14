@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * FinalWhistle Match Analyser — Phase C: Tactical Analysis
+ * FinalWhistle Match Analyser — Tactical Analysis Layer
  *
  * Pure analytics layer. Consumes the parsed match model built by parser.js
  * (opportunities, steps, tacticalEvents, tacticalPhases, validation) and returns plain
@@ -9,7 +9,7 @@
  * function here takes `match` (and sometimes a teamSide/options argument) and returns
  * plain data, so it is directly testable and reusable by any future UI.
  *
- * Evidence categories (Phase C's Core Evidence Rule) — every function below is one of:
+ * Evidence categories — every function below is one of:
  *   OBSERVED                      — directly present in steps/tacticalEvents
  *   DERIVED                       — deterministic calculation from OBSERVED data
  *   MANUAL-SUPPORTED INTERPRETATION — grounded in an explicitly documented FW mechanic
@@ -17,9 +17,10 @@
  * Nothing here computes an INFERRED conclusion and returns it as if it were a fact — an
  * INFERRED reading, on the few functions that offer one at all (assistance, fatigue,
  * lane), is returned as a separate `note` string, never merged into a numeric field.
- * See parser.js's B1 audit comment for which FW mechanics this codebase has narrative
- * evidence for at all; nothing here assumes a tactical setting merely because a pattern
- * in observed play looks a certain way.
+ * See parser.js's tactical-construct audit comment (above parseNarrative) for which FW
+ * mechanics this codebase has narrative evidence for at all; nothing here assumes a
+ * tactical setting merely because a pattern in observed play looks a certain way. See
+ * also README.md's Evidence model section for the same convention applied project-wide.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -33,8 +34,8 @@ const DUEL_STEP_TYPES = ['MID_DUEL', 'PB_DUEL', 'SP_DUEL', 'FK_DUEL', 'DRIB'];
 // Position → lane. Identical to viewer.js's own POSITION_LANE_MAP — kept as a second copy
 // (not imported) because analytics.js must not depend on viewer.js, which mixes DOM
 // code into the same file. This is a positional convention, not parser logic, so
-// duplicating it here is not "duplicating parser logic" in the sense Phase C's C1
-// warns against (it never re-derives narrative/telemetry parsing semantics).
+// duplicating it here does not risk drifting from what the parser itself derives (it
+// never re-derives narrative/telemetry parsing semantics).
 const POSITION_LANE_MAP = {
   GK: 'center', LB: 'left', CB: 'center', RB: 'right',
   LWB: 'left', DM: 'center', RWB: 'right',
@@ -65,7 +66,7 @@ function otherSide(side) { return side === 'home' ? 'away' : 'home'; }
 function round2(n) { return n == null ? null : Math.round(n * 100) / 100; }
 function avg(arr) { return arr.length ? round2(arr.reduce((a, b) => a + b, 0) / arr.length) : null; }
 
-// C20: small-sample discipline. A purely descriptive UI heuristic — never a statistical
+// Small-sample discipline. A purely descriptive UI heuristic — never a statistical
 // significance claim. No p-values or confidence intervals are computed anywhere in this
 // file; thresholds are display buckets only, adjustable without changing any underlying
 // calculation.
@@ -77,13 +78,13 @@ function sampleSizeHint(n) {
   return 'larger sample';
 }
 
-// C24: confidence propagation from Phase A. Analytics leaning on telemetry VALUES (not
-// just narrative-observed counts/outcomes) should surface 'degraded' whenever Phase A's
-// own validation flagged the underlying narrative↔telemetry alignment as uncertain —
-// counts drawn only from reliable narrative data (outcomes, player names, minutes) stay
-// exact regardless, so this is attached per-function/per-metric, not as a single
-// match-wide kill switch.
-function phaseAConfidence(match) {
+// Confidence propagation from the parser's own validation. Analytics leaning on
+// telemetry VALUES (not just narrative-observed counts/outcomes) should surface
+// 'degraded' whenever parseMatch's own validation flagged the underlying
+// narrative↔telemetry alignment as uncertain — counts drawn only from reliable narrative
+// data (outcomes, player names, minutes) stay exact regardless, so this is attached
+// per-function/per-metric, not as a single match-wide kill switch.
+function parserConfidence(match) {
   return match?.validation?.confidence === 'degraded' ? 'degraded' : 'exact';
 }
 
@@ -96,7 +97,7 @@ function finalizeValueAgg(agg) {
 function newDuelAgg() { return { attempts: 0, wins: 0, losses: 0 }; }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C2 — Opportunity funnel
+// Opportunity funnel
 // ─────────────────────────────────────────────────────────────────────────────
 
 // OBSERVED/DERIVED. Classifies HOW an opportunity's attack was routed — deliberately
@@ -120,7 +121,7 @@ function classifyProgressionType(opp) {
 // says so (WON — set whenever a shot followed — or POSSESSION — the attacker took
 // control outright with no contested tackle). This is the single authoritative
 // definition of "won a duel" used throughout this file — never a raw value comparison,
-// matching C6's explicit conservatism requirement.
+// matching findFirstFailedDefensiveStage's explicit conservatism requirement below.
 function attackerWonDuel(step) { return step.outcome === 'WON' || step.outcome === 'POSSESSION'; }
 
 function buildFunnelEntry(opp) {
@@ -170,15 +171,15 @@ function opportunityFunnel(match) {
       goals: e.filter(x => x.goalCount > 0).length,
     };
   };
-  return { entries, home: summarize('home'), away: summarize('away'), confidence: phaseAConfidence(match) };
+  return { entries, home: summarize('home'), away: summarize('away'), confidence: parserConfidence(match) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C5 — Turnover classification
+// Turnover classification
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DERIVED, directly from step outcomes — not every terminated opportunity is a
-// turnover. Explicitly excluded, per the task's own examples: a missed/saved/post shot
+// turnover. Explicitly excluded: a missed/saved/post shot
 // (the culmination of an attack, not a possession failure during buildup), a goal, a
 // foul (typically a free kick FOR the attacking side, not a loss of it), and a corner
 // (typically won by continued attacking pressure, not a defensive turnover). BLOCKED is
@@ -224,7 +225,7 @@ function turnoverAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C6 — Defensive failure chain
+// Defensive failure chain
 // ─────────────────────────────────────────────────────────────────────────────
 
 function summarizeChainStage(step) {
@@ -236,7 +237,7 @@ function summarizeChainStage(step) {
   };
 }
 
-// Conservative by construction (C6): the ONLY signal used is the step's own recorded
+// Conservative by construction: the ONLY signal used is the step's own recorded
 // outcome (WON/POSSESSION means the attacker won that duel outright) — never a raw
 // value comparison like "reception 82 vs tackle 71". A chain with no duel the attacker
 // won outright (a direct free kick, a corner resolved straight into a shot with no
@@ -287,7 +288,7 @@ function defensiveFailureChains(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C3 — Tactical-phase performance
+// Tactical-phase performance
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DERIVED. Per material-change phase (parser.js's buildTacticalPhases), own/opponent
@@ -337,7 +338,7 @@ function phasePerformance(match, teamSide) {
       ownPBEntries: pbBy(teamSide), opponentPBEntries: pbBy(oppSide),
       ownCounterAttacks: caBy(teamSide), opponentCounterAttacks: caBy(oppSide),
       turnoversWon: turnoversInPhase(oppSide), turnoversLost: turnoversInPhase(teamSide),
-      // C3: avoid overprecision on tiny samples — rates are still computed (they're
+      // Avoid overprecision on tiny samples — rates are still computed (they're
       // simple division, not statistics), but always travel with sampleSize/
       // durationMinutes/confidenceHint so a caller can choose not to trust a rate from
       // a 3-minute, 1-opportunity phase.
@@ -348,13 +349,13 @@ function phasePerformance(match, teamSide) {
         opponentShotsPer10Min: round2(shotsBy(oppSide) / durationMinutes * 10),
       } : null,
       sampleSize, confidenceHint: sampleSizeHint(sampleSize),
-      confidence: phaseAConfidence(match),
+      confidence: parserConfidence(match),
     };
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C4 — Before/after tactical-change comparison
+// Before/after tactical-change comparison
 // ─────────────────────────────────────────────────────────────────────────────
 
 function windowStats(match, side, oppSide, lo, hi, minuteLower, turnovers) {
@@ -375,9 +376,9 @@ function windowStats(match, side, oppSide, lo, hi, minuteLower, turnovers) {
 
 // DERIVED, explicitly labeled as a before/after ASSOCIATION, never a causal effect —
 // this function does not and cannot determine whether a tactical change caused any
-// difference it reports (see C4/C27). `windowTooThin` flags a comparison spanning under
-// 3 real minutes on either side (too close to kickoff/full time or another change to be
-// meaningful even as description).
+// difference it reports (same framing as compareAdjacentPhases below). `windowTooThin`
+// flags a comparison spanning under 3 real minutes on either side (too close to
+// kickoff/full time or another change to be meaningful even as description).
 function compareAroundEvent(match, eventId, { beforeMinutes = 15, afterMinutes = 15 } = {}) {
   const event = (match?.tacticalEvents || []).find(e => e.id === eventId);
   if (!event || event.minute == null || !event.teamSide) return null;
@@ -402,7 +403,7 @@ function compareAroundEvent(match, eventId, { beforeMinutes = 15, afterMinutes =
     windowTooThin: actualBefore < 3 || actualAfter < 3,
     before, after, delta,
     label: 'before/after association — not a measured causal effect',
-    confidence: phaseAConfidence(match),
+    confidence: parserConfidence(match),
   };
 }
 
@@ -422,12 +423,12 @@ function compareAdjacentPhases(match, teamSide, phaseId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C7 — Player duel analysis
+// Player duel analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DERIVED. Role-specific aggregates per player — deliberately NOT collapsed into one
-// composite rating (C22): a CB's defenderDuels and a FW's shooting are entirely
-// separate fields, never combined into a single number.
+// composite rating: a CB's defenderDuels and a FW's shooting are entirely separate
+// fields, never combined into a single number.
 function playerDuelAnalysis(match) {
   const byPlayer = {};
   const ensure = (p, team, side) => {
@@ -510,7 +511,7 @@ function playerDuelAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C8 — Assistance analysis
+// Assistance analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 // OBSERVED (values, frequency) + DERIVED (per-player/per-zone aggregates). The Manual
@@ -553,12 +554,12 @@ function assistanceAnalysis(match) {
   return {
     values, byPlayer, byZone,
     note: "Assistance values and frequency are observed match data. The Manual states Teamwork modifies assistance given by the player, but this analyser has no player-personality input from the match report itself — assistance patterns here must not be read backward as a Teamwork measurement.",
-    confidence: phaseAConfidence(match),
+    confidence: parserConfidence(match),
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C9 — Fatigue / tiredness analysis
+// Fatigue / tiredness analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 function duelSummaryForPlayer(match, name, minuteFilter) {
@@ -579,7 +580,7 @@ function duelSummaryForPlayer(match, name, minuteFilter) {
 }
 
 // OBSERVED before/after duel activity around a player's own tiredness reports —
-// deliberately observational only (C9): this function does not and cannot establish
+// deliberately observational only: this function does not and cannot establish
 // that Constitution/fatigue CAUSED any difference it reports. The `note` field carries
 // the Manual-supported interpretation as a clearly separate, explicitly-labeled string.
 function fatigueImpact(match) {
@@ -613,7 +614,7 @@ function fatigueImpact(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C10 — Lane analysis
+// Lane analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 function emptyLaneBucket() { return { left: {}, center: {}, right: {} }; }
@@ -621,8 +622,8 @@ function bumpLane(bucket, laneKey, key) { bucket[laneKey][key] = (bucket[laneKey
 
 // OBSERVED (positions) + DERIVED (lane bucketing). Lanes come from each player's
 // reported POSITION for that action — never from preferred foot (a player mechanic, not
-// a lane classifier) and never used to assert a Preferred Side tactical setting (C10):
-// a lane dominating the counts is an observed distribution, nothing more.
+// a lane classifier) and never used to assert a Preferred Side tactical setting: a lane
+// dominating the counts is an observed distribution, nothing more.
 function laneAnalysis(match) {
   const counts = { home: emptyLaneBucket(), away: emptyLaneBucket() };
   for (const opp of (match?.opportunities || [])) {
@@ -654,7 +655,7 @@ function laneAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C11 — Counter-attack analysis
+// Counter-attack analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 function emptyCASummary() { return { created: 0, conceded: 0, shots: 0, shotsConceded: 0, goals: 0, goalsConceded: 0, originatingCauses: [], originatingZones: [] }; }
@@ -693,7 +694,7 @@ function counterAttackAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C12 — Set-piece analysis
+// Set-piece analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 function emptySPCat() { return { home: { attempts: 0, duelWins: 0, duelLosses: 0, shots: 0, goals: 0 },
@@ -728,12 +729,12 @@ function setPieceAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C13 — Goalkeeper analysis
+// Goalkeeper analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 // OBSERVED/DERIVED, from shot outcomes only. Never reverse-engineers RE/GP/IN/CT/OR
-// skill values or an arrow setting from the shot types faced (C13) — the `note` field
-// makes that boundary explicit.
+// skill values or an arrow setting from the shot types faced — the `note` field makes
+// that boundary explicit.
 function goalkeeperAnalysis(match) {
   const byGK = {};
   const ensure = (p, team, side) => {
@@ -773,7 +774,7 @@ function goalkeeperAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C14 — Shot profile analysis
+// Shot profile analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Distinct from viewer.js's classifyShotType (that one is DOM-adjacent code in the
@@ -788,7 +789,7 @@ function classifyShotTypeForAnalytics(step) {
 
 // OBSERVED/DERIVED. Only uses shot types the parser/narrative actually identified — an
 // observed shot type (e.g. a lob shot) is not treated as proof a specific Player Order
-// was configured (C14): FinalWhistle report text does not establish that equivalence.
+// was configured: FinalWhistle report text does not establish that equivalence.
 function shotProfileAnalysis(match) {
   const byType = { home: {}, away: {} };
   for (const opp of (match?.opportunities || [])) {
@@ -819,11 +820,11 @@ function shotProfileAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C15 — Pass profile analysis
+// Pass profile analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 // OBSERVED/DERIVED. Routes describe where the ball actually moved between zones — never
-// a declared Style of Play or Player Order setting (C15). Pass "success" is not faked as
+// a declared Style of Play or Player Order setting. Pass "success" is not faked as
 // a completed/failed boolean on the pass step itself (the parser has no such field —
 // pass steps always carry outcome:null); the following duel's own outcome, already
 // covered by turnoverAnalysis/playerDuelAnalysis, is the honest signal for that.
@@ -859,7 +860,7 @@ function passProfileAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C16 — Player involvement chains
+// Player involvement chains
 // ─────────────────────────────────────────────────────────────────────────────
 
 function bumpInvolvement(obj, name, team, side) {
@@ -869,8 +870,8 @@ function bumpInvolvement(obj, name, team, side) {
 }
 
 // DERIVED — counts and outcome rates only. Deliberately no "most involved = best/worst"
-// verdict anywhere in this function (C16); a caller pairing these counts with outcome
-// data to form a judgment is doing that interpretation itself, not reading it off here.
+// verdict anywhere in this function; a caller pairing these counts with outcome data to
+// form a judgment is doing that interpretation itself, not reading it off here.
 function playerInvolvementChains(match) {
   const starts = {}, progressors = {}, pbReceivers = {}, terminators = {}, shotChainDefenders = {};
   for (const opp of (match?.opportunities || [])) {
@@ -902,7 +903,7 @@ function playerInvolvementChains(match) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    laneOf, sampleSizeHint, phaseAConfidence,
+    laneOf, sampleSizeHint, parserConfidence,
     opportunityFunnel, buildFunnelEntry, classifyProgressionType,
     turnoverAnalysis, classifyTurnoverCause,
     defensiveFailureChains, findFirstFailedDefensiveStage,

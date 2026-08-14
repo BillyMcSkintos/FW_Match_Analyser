@@ -1,19 +1,17 @@
 'use strict';
-// Static security audit — adapted from an independent hardening pass on a fork of this
-// project (TheCrowsFW/FW_Match_Analyser, hardened-0.6.0 branch). Two things this file
-// checks that were previously only verified by hand (D6/D11's manual grep for fetch/XHR
-// and secrets) are now permanent, automatic CI guarantees instead of one-time claims:
+// Static security audit. Two things this file checks that were previously only
+// verified by hand (a manual grep for fetch/XHR and secrets before each release) are
+// now permanent, automatic CI guarantees instead of one-time claims:
 //
 //   1. No network-exfiltration, dynamic-eval, or persistent-non-extension-storage sink
 //      appears anywhere in the runtime JS bundle.
 //   2. No secret-shaped string (private key, password literal, bearer token, GitHub
 //      token) is committed anywhere in the repo.
 //
-// Deliberately NOT copied from the fork: its permission/CSP assertions assume an
-// activeTab-only, chrome.storage.session design this project didn't adopt (see the
-// conversation this was reviewed in — that's a real UX trade-off, not a strict
-// improvement, and remains a deliberate decision, not a silent regression). The
-// assertions below check THIS project's actual, intentional shape instead.
+// The permission/manifest assertions below check THIS project's actual, intentional
+// shape — activeTab + tabs + scripting + storage, host_permissions scoped to
+// finalwhistle.org, chrome.storage.local (not .session). See README.md's Security
+// section for why each of those is the deliberate choice, not an oversight.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -29,8 +27,8 @@ test('manifest declares exactly the permissions/host_permissions this project ac
   const manifest = JSON.parse(read('manifest.json'));
   assert.equal(manifest.manifest_version, 3);
   // A set-equality check, not an exact-array check — this project's permission ORDER
-  // isn't meaningful, but an unnoticed ADDITION or REMOVAL here is exactly what D10's
-  // permission audit exists to catch going forward.
+  // isn't meaningful, but an unnoticed ADDITION or REMOVAL here is exactly what this
+  // check exists to catch going forward.
   assert.deepEqual([...manifest.permissions].sort(), ['activeTab', 'scripting', 'storage', 'tabs']);
   assert.deepEqual(manifest.host_permissions, ['https://*.finalwhistle.org/*']);
   // Fields that would meaningfully expand the extension's capability/attack surface if
@@ -69,8 +67,9 @@ test('no network-exfiltration, dynamic-eval, or unexpected persistent-storage si
     [/\bchrome\.cookies\b/, 'cookies API'],
     [/\bdocument\.cookie\b/, 'document.cookie'],
     // Deliberately NOT forbidding chrome.storage.local (this project's own persisted
-    // scrape storage — see D11/D12) or localStorage/sessionStorage generically; only the
-    // sinks that would smuggle data OUT of the extension's own trusted storage model.
+    // scrape storage — see background.js) or localStorage/sessionStorage generically;
+    // only the sinks that would smuggle data OUT of the extension's own trusted storage
+    // model.
     [/\bindexedDB\b/, 'IndexedDB'],
     [/\beval\s*\(/, 'eval'],
     [/\bnew\s+Function\s*\(/, 'Function constructor'],

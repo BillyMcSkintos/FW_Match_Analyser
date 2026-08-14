@@ -1,5 +1,5 @@
 'use strict';
-// Regression tests for analytics.js (Phase C). No test framework dependency — Node's
+// Regression tests for analytics.js. No test framework dependency — Node's
 // built-in test runner, matching parser.test.js/viewer.test.js/scraper.test.js.
 // Fixtures reuse proven real FinalWhistle narrative wording from parser.test.js's own
 // fixtures wherever a matching scenario already exists there, rather than inventing new
@@ -36,7 +36,7 @@ function midTelemetryLines(minute, side) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C2 — opportunityFunnel
+// opportunityFunnel
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('opportunity stopping in midfield reports terminalStage MIDFIELD, not PB/SHOT', () => {
@@ -189,7 +189,7 @@ test('multiple shots/rebound in one opportunity are all counted', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C5 — turnoverAnalysis
+// turnoverAnalysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('a lost midfield tackle duel is classified TACKLE_LOSS with correct losing/winning sides', () => {
@@ -295,7 +295,7 @@ test('a missed shot, a goal, and a corner are never classified as turnovers', ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C6 — defensiveFailureChains
+// defensiveFailureChains
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('firstFailedDefensiveStage is null for a direct free kick (no preceding duel to blame)', () => {
@@ -334,7 +334,7 @@ test('firstFailedDefensiveStage identifies the duel the attacker actually won, c
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C3 — phasePerformance / tactical-phase attribution
+// phasePerformance / tactical-phase attribution
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('phasePerformance attributes opportunities to the correct phase and reports small-sample confidenceHint', () => {
@@ -390,7 +390,7 @@ test('a counter-attack goal scored during the opponent\'s own opportunity is att
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C4 — before/after tactical comparison
+// before/after tactical comparison
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('compareAroundEvent reports a labeled association, not a causal claim', () => {
@@ -427,7 +427,7 @@ test('compareAroundEvent returns null for an event that never resolved a teamSid
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C7 — playerDuelAnalysis
+// playerDuelAnalysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('playerDuelAnalysis aggregates attacker and defender duels separately per player', () => {
@@ -444,7 +444,7 @@ test('playerDuelAnalysis aggregates attacker and defender duels separately per p
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C8 — assistanceAnalysis
+// assistanceAnalysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('assistanceAnalysis reports observed values without inferring Teamwork', () => {
@@ -458,7 +458,7 @@ test('assistanceAnalysis reports observed values without inferring Teamwork', ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C9 — fatigueImpact
+// fatigueImpact
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('fatigueImpact is observational — it does not itself claim a decline', () => {
@@ -478,7 +478,7 @@ test('fatigueImpact is observational — it does not itself claim a decline', ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C10 — laneAnalysis
+// laneAnalysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('laneAnalysis buckets by actual reported position, not preferred foot, and does not assert Preferred Side', () => {
@@ -501,7 +501,7 @@ test('laneAnalysis buckets by actual reported position, not preferred foot, and 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C11 — counterAttackAnalysis (regression: existing CA step ownership)
+// counterAttackAnalysis (regression: existing CA step ownership)
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('counter-attack step ownership remains correct: created/conceded/shots/goals attributed to the actual attacking side', () => {
@@ -538,7 +538,7 @@ test('counter-attack step ownership remains correct: created/conceded/shots/goal
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C12/C13 — setPieceAnalysis / goalkeeperAnalysis
+// setPieceAnalysis / goalkeeperAnalysis
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('goalkeeper fumble and rebound are both captured with correct outcomes', () => {
@@ -575,7 +575,7 @@ test('goalkeeper fumble and rebound are both captured with correct outcomes', ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C14/C15 — shot/pass profile: no player-order inference
+// shot/pass profile: no player-order inference
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('an observed shot type is reported without implying the corresponding player order was active', () => {
@@ -635,7 +635,7 @@ test('a long-ball sequence is reported as an observed route, not a Long Balls ta
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C20 — small-sample discipline
+// small-sample discipline
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('sampleSizeHint follows the documented display thresholds', () => {
@@ -649,21 +649,21 @@ test('sampleSizeHint follows the documented display thresholds', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C24 — degraded Phase A alignment propagates analytical confidence
+// degraded parser validation propagates analytical confidence
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('degraded Phase A validation propagates into analytics confidence fields', () => {
+test('degraded parser validation propagates into analytics confidence fields', () => {
   const narrative = ['Minute 10', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]')].join('\n');
-  // No telemetry at all for this minute — Phase A marks this opportunity's stream match
-  // as 'none', which degrades match.validation.confidence.
+  // No telemetry at all for this minute — parseMatch marks this opportunity's stream
+  // match as 'none', which degrades match.validation.confidence.
   const match = parseMatch('', narrative, HA);
   assert.equal(match.validation.confidence, 'degraded');
-  assert.equal(A.phaseAConfidence(match), 'degraded');
+  assert.equal(A.parserConfidence(match), 'degraded');
   assert.equal(A.opportunityFunnel(match).confidence, 'degraded');
   assert.equal(A.assistanceAnalysis(match).confidence, 'degraded');
 });
 
-test('exact Phase A validation keeps analytics confidence exact', () => {
+test('exact parser validation keeps analytics confidence exact', () => {
   const narrative = ['Minute 10', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]')].join('\n');
   const match = parseMatch(midTelemetryLines(10, 'H').join('\n'), narrative, HA);
   assert.equal(match.validation.confidence, 'exact');

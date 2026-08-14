@@ -45,9 +45,9 @@ function loadViewerContext() {
   };
   const context = vm.createContext(sandbox);
   // parser.js's functions (qualityLabel, qv, tierColor-adjacent) and analytics.js's
-  // Phase C functions (phasePerformance, opportunityFunnel, ...) are referenced by
-  // viewer.js, so load both into the same context first, mirroring viewer.html's own
-  // script order: utils.js, parser.js, analytics.js, viewer.js.
+  // functions (phasePerformance, opportunityFunnel, ...) are referenced by viewer.js, so
+  // load both into the same context first, mirroring viewer.html's own script order:
+  // utils.js, parser.js, analytics.js, viewer.js.
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
   vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });
@@ -298,7 +298,7 @@ test('malicious player/team names are escaped, not injected as HTML', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tactical Phases (Phase B) — Squad tab rendering
+// Tactical Phases — Squad tab rendering
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('renderTacticalPhasesSection shows one card per material change, with only known fields', () => {
@@ -359,7 +359,7 @@ test('renderSquadTab still renders the existing sections alongside the new Tacti
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Analysis tab (Phase C)
+// Analysis tab
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('renderAnalysisTab renders the funnel, phase comparison and defensive breakdown sections', () => {
@@ -408,7 +408,7 @@ test('renderAnalysisTab escapes malicious player/team names in the defensive bre
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase D (D1/D7) — cross-file duplication drift check
+// Cross-file duplication drift check
 // ─────────────────────────────────────────────────────────────────────────────
 // viewer.js's own pitch-layout lane() and analytics.js's laneOf() are independent
 // position→lane implementations (analytics.js must not depend on viewer.js's DOM-mixed
@@ -430,13 +430,13 @@ test('viewer.js\'s lane() and analytics.js\'s laneOf() agree for every FinalWhis
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase D (D6) — innerHTML security audit: payload-shaped strings, end-to-end
+// innerHTML security audit: payload-shaped strings, end-to-end
 // ─────────────────────────────────────────────────────────────────────────────
 // These check RENDERED OUTPUT is escaped, not just that escapeHtml() behaves correctly
 // in isolation — each payload is pushed through a genuine data path a real scrape could
 // carry it through (a player name, a team name, a scraped stat label), into the actual
-// render function a real match uses, per D6's explicit "not merely that escapeHtml()
-// works in isolation" requirement.
+// render function a real match uses. Not merely "escapeHtml() works in isolation" —
+// every actual call site that touches untrusted text is exercised end-to-end.
 
 const XSS_SCRIPT = '<script>alert(1)</script>';
 const XSS_IMG = '"><img src=x onerror=alert(1)>';
@@ -492,17 +492,17 @@ test('the stats panel escapes an </span><svg onload=...> breakout payload in a s
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase D (D11/D12) — backward compatibility with old chrome.storage.local scrape objects
+// Backward compatibility with old chrome.storage.local scrape objects
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase A–C added fields to the FRESHLY-COMPUTED match model (validation, sequence,
-// tacticalContext, tactical phases) — none of those were ever part of what gets
+// Fields like validation, sequence, tacticalContext, and tactical phases only ever
+// exist on the FRESHLY-COMPUTED match model — none of those were ever part of what gets
 // PERSISTED to chrome.storage.local (the persisted shape is scraper.js's own
 // {narrative, telemetry, homeTeam, awayTeam, statistics, errors, warnings, scrapedAt}
 // output; parseMatch() rebuilds the whole match model fresh from stored narrative/
 // telemetry text on every load). These tests still exist because that's an invariant
 // worth protecting explicitly, not just an accident of the current implementation.
 
-test('render() does not throw on a minimal pre-Phase-A scrape object with no errors/warnings/statistics/scrapedAt', () => {
+test('render() does not throw on a minimal old-format scrape object with no errors/warnings/statistics/scrapedAt', () => {
   const ctx = loadViewerContext();
   const oldScrape = {
     narrative: [
@@ -531,7 +531,7 @@ test('render() does not throw on malformed narrative text that never resolves an
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase D (D14) — per-panel error isolation
+// Per-panel error isolation
 // ─────────────────────────────────────────────────────────────────────────────
 
 // loadViewerContext()'s stub document.getElementById returns a fresh throwaway element

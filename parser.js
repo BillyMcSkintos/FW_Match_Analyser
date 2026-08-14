@@ -153,10 +153,10 @@ function buildStreamPhases(tokens) {
 // NARRATIVE PARSER  →  internal phases (converted to steps after stream merge)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Phase B (Tactical Truth) construct audit — reconciled against the FinalWhistle manual
-// (Tactics & Orders, Match Engine sections) and every narrative fixture in
-// parser.test.js. This is the source of truth for what this parser claims to support;
-// keep it in sync when adding/removing a tactical construct.
+// Tactical-construct audit — reconciled against the FinalWhistle manual (Tactics &
+// Orders, Match Engine sections) and every narrative fixture in parser.test.js. This is
+// the source of truth for what this parser claims to support; keep it in sync when
+// adding/removing a tactical construct.
 //
 // OBSERVED — real "Issued order-"/admin lines this parser matches today:
 //   SUBSTITUTION, POSITION_CHANGE, MENTALITY_CHANGE, ISOLATE, TIREDNESS, INJURY,
@@ -180,8 +180,8 @@ function buildStreamPhases(tokens) {
 //   permanently null. Every STYLE_CHANGE event also carries semanticType:
 //   'MIDDLE_ORDER_CHANGE' and interpretation: 'ambiguous' so a consumer can see the
 //   epistemic status without needing to have read this comment. This exists specifically
-//   so Phase C can never end up comparing "Short Passes vs Long Balls" against a value
-//   the source may not have actually meant.
+//   so analytics.js can never end up comparing "Short Passes vs Long Balls" against a
+//   value the source may not have actually meant.
 //
 // MANUAL-DEFINED, NOT OBSERVED — real FW mechanics per the manual with no narrative
 //   construct parsed for them anywhere in this codebase, and no fixture/report evidence
@@ -195,10 +195,10 @@ function buildStreamPhases(tokens) {
 //   what would generically be called "aggression"), Arrow Orders (player arrows and the
 //   distinct goalkeeper arrow), Set Piece Orders (Corner: Cross/Restart; Free-kick:
 //   Shoot/Cross/Restart; Anchor), and Captain/Free-kick-taker/Corner-kick-taker
-//   assignment. None of these get an event parser in Phase B — per the task's own
-//   fallback, a manual-defined mechanic with no observed narrative activation does not
-//   get a fabricated parser. Deferred pending real match-report samples showing these
-//   as narrative text (not just tactics-setup UI).
+//   assignment. None of these get an event parser — the standing rule is that a
+//   manual-defined mechanic with no observed narrative activation does not get a
+//   fabricated parser. Deferred pending real match-report samples showing these as
+//   narrative text (not just tactics-setup UI).
 function parseNarrative(narrativeText) {
   const ls = narrativeText.split('\n').map(l => l.trim()).filter(Boolean);
   const opps = [], tactics = [], unknownNarrativeLines = [];
@@ -206,11 +206,11 @@ function parseNarrative(narrativeText) {
   // Shared monotonic counter across BOTH opportunities and tactical events, assigned in
   // true top-to-bottom narrative order (this single loop reads the report exactly as
   // laid out) — this is what lets tacticalStateAt() later tell whether a tactical event
-  // fell before or after a same-minute opportunity, the same way Phase A's per-
-  // opportunity score snapshots fixed same-minute score ordering.
+  // fell before or after a same-minute opportunity, the same way each opportunity's own
+  // score snapshot (see annotateScores below) fixes same-minute score ordering.
   let seq = 0;
   const nextSeq = () => seq++;
-  // Every tactical event goes through this so the normalized envelope (B2) is applied
+  // Every tactical event goes through this so the normalized envelope below is applied
   // uniformly instead of hand-rolled per push site. `scope` follows a simple convention:
   // 'player' when the event's payload is fundamentally about one (or two) named players
   // (a sub, a position move, tiredness, an injury) even though a sub/position change also
@@ -836,16 +836,16 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TACTICAL STATE  (Phase B — Tactical Truth)
+// TACTICAL STATE
 // ─────────────────────────────────────────────────────────────────────────────
 
-// B3: initial tactical state. No FinalWhistle scrape source currently supplies initial
+// Initial tactical state. No FinalWhistle scrape source currently supplies initial
 // lineup/tactics settings — only what the narrative itself reports as CHANGES — so every
 // field starts unknown. Convention: `null` everywhere, chosen over the string 'unknown' so
 // there's exactly one falsy "nothing here" value to check throughout this module. Never
 // derive any of this from opportunity patterns (e.g. guessing initial mentality from
-// opportunity volume) — that would be INFERRED, not OBSERVED/DERIVED, and Phase B is
-// explicitly scoped to the latter two.
+// opportunity volume) — that would be INFERRED, not OBSERVED/DERIVED, and this module is
+// explicitly scoped to the latter two (see the Evidence model in README.md).
 //
 // `formation` is deliberately NOT a field here — see deriveFormation below, computed
 // separately from `players` at query time so a DERIVED value never sits inside the same
@@ -853,7 +853,7 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
 // distinction visible in the shape of the data, not just in a comment.
 // `style` vs `middleOrder`: STYLE_CHANGE's source line ("Issued order- Change (middle )?
 // order to X") is ambiguous between the manual's team-wide Style of Play and a per-zone
-// Player Order (see the B1 audit comment above parseNarrative) — nothing establishes
+// Player Order (see the tactical-construct audit comment above parseNarrative) — nothing establishes
 // which one it actually is. `style` therefore stays permanently null; the observed value
 // is written to the neutral `middleOrder` field instead by tacticalStateAt. `style`
 // stays in this shape only so a future confirmed Style-of-Play source has somewhere to
@@ -873,7 +873,7 @@ function initialTeamState() {
   };
 }
 
-// B5: player state kept structurally separate from team state (not flattened together).
+// Player state kept structurally separate from team state (not flattened together).
 // A player only enters this map once they're first observed — there is no initial-lineup
 // scrape source to seed a full 11-a-side roster from — so `onPitch` only ever reflects
 // "we have evidence this player is out there", never a real starting-XI-vs-bench fact for
@@ -883,7 +883,7 @@ function initialPlayerState(name, position) {
            arrow: null, tiredness: null, injury: null };
 }
 
-// B7: structural formation derived from currently-known on-pitch player positions.
+// Structural formation derived from currently-known on-pitch player positions.
 // Deliberately no human-friendly "4-4-2" label: with no initial-lineup source, `players`
 // is built up entirely from narrative mentions observed so far, so having all 11 on-pitch
 // players known at any given moment will be rare — a shorthand label would misrepresent a
@@ -910,10 +910,10 @@ function deriveFormation(players) {
   return { counts, playerCount, complete: playerCount === 11 };
 }
 
-// B4/B5: reconstructs a team's tactical state (team-level settings + every known
-// player's state) at a specific point in the match. Pure — never mutates `match`.
+// Reconstructs a team's tactical state (team-level settings + every known player's
+// state) at a specific point in the match. Pure — never mutates `match`.
 //
-// Same-minute ordering uses `sequence`, exactly the way Phase A's annotateScores uses
+// Same-minute ordering uses `sequence`, exactly the way annotateScores (above) uses
 // narrative sequence instead of a minute-keyed lookup for scores: two tactical events (or
 // an event and an opportunity) at the same minute are still strictly ordered by when they
 // actually appeared in the report.
@@ -956,8 +956,8 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
       case 'STYLE_CHANGE':
         // Deliberately NOT teamState.style — see initialTeamState's comment. Writing an
         // unresolved-mechanic event into a field literally named `style` would let a
-        // later consumer (Phase C) compare "Short Passes vs Long Balls" when the source
-        // may actually have said something else entirely (a per-zone player order).
+        // later consumer (analytics.js) compare "Short Passes vs Long Balls" when the
+        // source may actually have said something else entirely (a per-zone player order).
         // `middleOrder` is the honest, neutral name for "value observed in this line".
         teamState.middleOrder = ev.style; break;
       case 'ISOLATE':
@@ -1015,12 +1015,13 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
   };
 }
 
-// B8: a new tactical phase begins only on a MATERIAL state change for `teamSide` —
+// A new tactical phase begins only on a MATERIAL state change for `teamSide` —
 // mentality, style, a substitution, a position change, or an isolate order (the only
-// change types Phase B actually observes; see the B1 audit comment above parseNarrative
-// for what's deliberately excluded). An opportunity, a shot, a tiredness report, or a
-// score change never splits a phase on its own (B8/B14) — they're still readable as
-// context via tacticalStateAt for any minute inside whichever phase they fall in.
+// change types this file observes at all; see the tactical-construct audit comment
+// above parseNarrative for what's deliberately excluded). An opportunity, a shot, a
+// tiredness report, or a score change never splits a phase on its own — they're still
+// readable as context via tacticalStateAt for any minute inside whichever phase they
+// fall in.
 const PHASE_TRIGGER_TYPES = new Set(['MENTALITY_CHANGE', 'STYLE_CHANGE', 'SUBSTITUTION', 'POSITION_CHANGE', 'ISOLATE']);
 
 function buildTacticalPhases(match, teamSide) {
@@ -1032,7 +1033,8 @@ function buildTacticalPhases(match, teamSide) {
   // move and a mentality change all at 62') form ONE phase transition, not one micro-phase
   // per event — they read as a single tactical adjustment. Sequence order still fully
   // determines what counts as before/after this boundary for opportunity association
-  // (B9); grouping by minute only changes how many rows the phase LIST itself shows.
+  // (see phaseIdAt below); grouping by minute only changes how many rows the phase LIST
+  // itself shows.
   const groups = [];
   for (const ev of triggers) {
     const last = groups[groups.length - 1];
@@ -1066,7 +1068,7 @@ function buildTacticalPhases(match, teamSide) {
   });
 }
 
-// B9: which tactical phase (by id) covers a given narrative sequence position. Opportunity
+// Which tactical phase (by id) covers a given narrative sequence position. Opportunity
 // sequences are always strictly between two distinct trigger sequences (or before the
 // first / after the last) since every opportunity and every tactical event draws from the
 // same shared, never-repeated counter — so the boundary comparison below never has to
@@ -1242,10 +1244,10 @@ function parseMatch(streamText, narrativeText, meta) {
     if (reg?.side) { ev.teamSide = reg.side; ev.team = reg.team; }
   }
 
-  // B8/B9: dynamic tactical phases per side, then associate each opportunity with the
-  // phase (by id) in force for both its own team and the opponent at the moment it
-  // happened — keyed by narrative sequence, not minute, for the same reason Phase A keys
-  // scores that way.
+  // Dynamic tactical phases per side, then associate each opportunity with the phase (by
+  // id) in force for both its own team and the opponent at the moment it happened — keyed
+  // by narrative sequence, not minute, for the same reason annotateScores keys scores
+  // that way.
   const phaseSource = { tacticalEvents };
   const tacticalPhases = {
     home: buildTacticalPhases(phaseSource, 'home'),
@@ -1264,12 +1266,12 @@ function parseMatch(streamText, narrativeText, meta) {
 
   const uncertainCount = opportunities.filter(o => o.streamMatchConfidence === 'uncertain').length;
 
-  // B16: a tactical event whose team could never be resolved (the player it names was
-  // never observed anywhere else in the match either) means part of the tactical
+  // A tactical event whose team could never be resolved (the player it names was never
+  // observed anywhere else in the match either) means part of the tactical
   // reconstruction for this match is incomplete — surfaced the same way as every other
-  // Phase A diagnostic rather than a separate warning system. This is a genuinely
-  // different kind of uncertainty than telemetry/narrative pairing (`confidence` above),
-  // so it gets its own field instead of being folded into that enum.
+  // match-level diagnostic below rather than a separate warning system. This is a
+  // genuinely different kind of uncertainty than telemetry/narrative pairing
+  // (`confidence` above), so it gets its own field instead of being folded into that enum.
   const unresolvedTacticalEvents = tacticalEvents
     .filter(ev => ev.scope !== 'match' && !ev.teamSide)
     .map(ev => ({ id: ev.id, type: ev.type, minute: ev.minute }));

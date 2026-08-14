@@ -4,10 +4,10 @@
  * FinalWhistle Match Analyser — viewer
  *
  * Renders the extension's UI from a parsed match (see parser.js): the pitch
- * visualization, opportunity list, match timeline, and the Statistics/Phases/
- * Squad/Narrative/Telemetry tabs. Single file, no build step. Sections below
- * run roughly outside-in — small drawing helpers first, then the top-level
- * render() that wires a scrape result to the whole page, then interaction
+ * visualization, opportunity list, match timeline, and the Statistics/Phases/Squad/
+ * Analysis/Narrative/Telemetry tabs, plus a local JPG export. Single file, no build
+ * step. Sections below run roughly outside-in — small drawing helpers first, then the
+ * top-level render() that wires a scrape result to the whole page, then interaction
  * wiring at the bottom:
  *
  *   COLOURS                     – shared color constants (home/away/goal/etc.)
@@ -20,8 +20,10 @@
  *   MATCH TIMELINE              – the 0–90' marker strip above the opportunity list
  *   OPPORTUNITY LIST RENDERING  – the scrollable list of opportunity rows
  *   STATS PANEL / PHASES / SQUAD – the other tab bodies
+ *   ANALYSIS TAB                – pure rendering over analytics.js's plain data
  *   MAIN RENDER                 – render(scrape): parse + populate every panel
  *   HOVER / CLICK INTERACTIONS  – preview-on-hover, pin-on-click, timeline sync
+ *   EXPORT — JPG SNAPSHOT       – local export as a self-contained rasterized SVG
  *   TABS / EVENT DELEGATION /
  *   BUTTONS                     – wiring at the bottom of the file
  */
@@ -477,8 +479,8 @@ function gLine(x1,y1,x2,y2,col,label,pct=.5,dashed=false) {
 
 // pos/atkPos/defPos are position codes (parser.js only ever captures them via a
 // \[([A-Z]+)\] narrative regex, so today they can't contain HTML metacharacters) — escaped
-// anyway (D6, Phase D security audit) so this stays safe even if a future parser change
-// ever loosens that constraint, rather than relying solely on an upstream regex forever.
+// anyway so this stays safe even if a future parser change ever loosens that constraint,
+// rather than relying solely on an upstream regex forever.
 function playerNode(x,y,pos,col,outline=false) {
   return [
     `<circle cx="${x}" cy="${y}" r="12" fill="#060d18" stroke="${col}" stroke-width="${outline?2:1.5}" opacity="${outline?1:.8}"/>`,
@@ -935,8 +937,8 @@ function renderTacticalRow(ev) {
       icon = '⚙';
       // Labeled "Middle order", not "Style" — the source line doesn't establish whether
       // this is the manual's team-wide Style of Play or a per-zone player order (see
-      // parser.js's B1 audit comment). "Style →" would prime a reader toward the same
-      // unproven reading Phase C must not encode either.
+      // parser.js's tactical-construct audit comment). "Style →" would prime a reader
+      // toward the same unproven reading analytics.js must not encode either.
       text = `Middle order <span class="p-arr">→</span> ${escapeHtml(ev.style)}${impactTag(ev)}`;
       break;
     case 'ISOLATE':
@@ -1529,7 +1531,7 @@ function renderTirednessGroup(g, col) {
   </div>`;
 }
 
-// ── Tactical Phases (Phase B) ────────────────────────────────────────────────────────
+// ── Tactical Phases ───────────────────────────────────────────────────────────────────
 // A compact timeline answering "when did this team's configuration change, and what
 // changed": one card per dynamic tactical phase (parser.js's buildTacticalPhases —
 // starts a new phase only on a material change, never on an opportunity/shot/score/
@@ -1539,7 +1541,7 @@ function renderTirednessGroup(g, col) {
 // Only fields parser.js actually populated are shown; an unpopulated setting (marking,
 // defence focus, preferred side, offside, player orders, aggression, arrows — none of
 // these are exposed by the narrative constructs this parser currently recognizes, see
-// parser.js's B1 audit comment) renders as "—", never guessed or filled in.
+// parser.js's tactical-construct audit comment) renders as "—", never guessed or filled in.
 function renderTacticalPhaseRow(phase, col) {
   const period = phase.endMinute != null ? `${phase.startMinute}–${phase.endMinute}'` : `${phase.startMinute}'+`;
   const ts = phase.state.teamState;
@@ -1599,17 +1601,17 @@ function renderSquadTab(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ANALYSIS TAB  (Phase C — Tactical Analysis)
+// ANALYSIS TAB
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure rendering over analytics.js's plain data — no analysis logic lives here. Numbers
 // and neutral deltas only: nowhere in this section does a "good tactic" / "successful
-// change" verdict get attached to a comparison (Phase C's own explicit constraint) —
+// change" verdict get attached to a comparison (analytics.js's own explicit constraint) —
 // that judgment is left to the reader, not asserted by the UI.
 
 function fmtDelta(n) { return n == null ? '—' : (n >= 0 ? '+' : '') + n; }
 
-// D13 (Phase D performance): takes the already-computed `perf` array and the index into
-// it, rather than calling analytics.js's compareAdjacentPhases(match, side, phaseId) —
+// Takes the already-computed `perf` array and the index into it, rather than calling
+// analytics.js's compareAdjacentPhases(match, side, phaseId) —
 // that function independently re-runs phasePerformance() (which itself re-runs
 // turnoverAnalysis() over every opportunity) from scratch on every call. Called once per
 // phase card, that turned "compute phasePerformance for this side" into an O(phases)
@@ -1769,8 +1771,8 @@ function showErrors(errors, warnings) {
 // the goal whose target is the scorer (the pass that actually put them through), which
 // covers the normal case (PB_PASS/SP_PASS/FK_PASS/START_PASS → shot) and naturally comes
 // back null for solo efforts (dribble from deep, direct free kick) where no such pass exists.
-// (Reuses PASS_STEP_TYPES_FOR_STATS, defined above with buildFWDelivery — Phase D found
-// this was declared a second time here with an identical value; consolidated to one.)
+// (Reuses PASS_STEP_TYPES_FOR_STATS, defined above with buildFWDelivery — this used to be
+// declared a second time here with an identical value; consolidated to one.)
 function findAssist(opp, goalStep) {
   const shooterName = goalStep.shooter?.name;
   if (!shooterName) return null;
@@ -1843,10 +1845,10 @@ function renderScorersRow(scorers) {
   return html;
 }
 
-// D14 (Phase D, error isolation): runs an optional secondary panel's render function and
-// writes its HTML into the given panel element — but if it throws, the panel shows a
-// small, clearly-labeled, escaped error message instead of taking the rest of render()
-// down with it. Never silent: the real error still goes to console.error for debugging.
+// Runs an optional secondary panel's render function and writes its HTML into the given
+// panel element — but if it throws, the panel shows a small, clearly-labeled, escaped
+// error message instead of taking the rest of render() down with it. Never silent: the
+// real error still goes to console.error for debugging.
 function renderPanelSafely(panelId, label, renderFn) {
   const el = $(panelId);
   try {
@@ -1915,9 +1917,9 @@ function render(scrape) {
   }
 
   const { opportunities } = _match;
-  // D14 (Phase D, error isolation): Opportunities is core — if this throws, something is
-  // seriously wrong with the just-parsed match, not with one optional panel, so it's
-  // allowed to propagate rather than being isolated away like the panels below.
+  // Opportunities is core — if this throws, something is seriously wrong with the
+  // just-parsed match, not with one optional panel, so it's allowed to propagate rather
+  // than being isolated away like the panels below (see renderPanelSafely above).
   renderOppSummaryAndList();
 
   // Stats / fixed-window Phases / Squad / Analysis are independent secondary panels — a
@@ -2119,23 +2121,21 @@ function clickTimelineMarker(idx) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT — JPG SNAPSHOT
 // ─────────────────────────────────────────────────────────────────────────────
-// Adapted from an independent hardening/feature pass on a fork of this project
-// (TheCrowsFW/FW_Match_Analyser, hardened-0.6.0 branch): a self-contained SVG is built
-// entirely from already-parsed match data (no DOM screenshot, no external image/font
-// references), then rasterized locally to a JPG via <canvas>. Reuses this project's own
-// pitch/flow/highlight/timeline renderers (renderPitchOutline, buildBaseFlow/
-// renderBaseFlow, renderHighlightChain, renderMatchTimeline, computePhaseStats) instead
-// of porting the fork's parallel copies of them — both projects share the same 500×820
-// pitch-geometry heritage, so those functions already produce exactly the SVG fragments
-// an export needs, and there's no <marker>/href/url() indirection to special-case the
-// way the fork's assertSelfContainedExportSvg has to (arrows here are always plain
-// inline polygons — see arrowHead() above).
+// A self-contained SVG is built entirely from already-parsed match data (no DOM
+// screenshot, no external image/font references), then rasterized locally to a JPG via
+// <canvas> — nothing is uploaded anywhere (see the Security section in README.md).
+// Reuses this project's own pitch/flow/highlight/timeline renderers (renderPitchOutline,
+// buildBaseFlow/renderBaseFlow, renderHighlightChain, renderMatchTimeline,
+// computePhaseStats) rather than building a second copy of the same drawing logic just
+// for export — arrows are always plain inline polygons (see arrowHead() above), so
+// there's no <marker>/href/url() indirection to worry about in
+// assertSelfContainedExportSvg below.
 //
-// Deliberately simpler than the fork's version in one respect: the full-view scope shows
-// the pinned possession's chain detail + narrative excerpt (mirroring what's already
-// visible in the live right-overlay panel) plus a compact per-window opportunity/shot/
-// goal table (computePhaseStats, reused from the Phases tab) rather than porting the
-// fork's much larger bespoke scrollable per-row opportunity-list renderer.
+// The full-view scope shows the pinned possession's chain detail + narrative excerpt
+// (mirroring what's already visible in the live right-overlay panel) plus a compact
+// per-window opportunity/shot/goal table (computePhaseStats, reused from the Phases
+// tab) — a snapshot of the app's own current state, not a rendering of every
+// opportunity row in the list.
 
 const EXPORT_MAX_DISPLAY_CHARS = 240;
 const COMPACT_EXPORT_WIDTH = 1600;

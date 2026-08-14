@@ -20,16 +20,15 @@
 const DEBUG = false;
 function debug(...args) { if (DEBUG) console.debug('[FW Analyser]', ...args); }
 
-// Reviewed against a fork's independent hardening pass, which validated the scraped
-// page's own URL before trusting anything scraped from it. Deliberately narrower than
-// that fork's version: this only asserts what host_permissions (`https://*.finalwhistle.
-// org/*`) already restricts network access to — protocol, hostname (including
-// subdomains, matching that same wildcard pattern), and no embedded port/credentials.
-// It does NOT assert an exact match-report path shape (e.g. a fixed /en/match/<uuid>
-// pattern) — this project has no confirmed evidence FinalWhistle's path is always that
-// shape, and guessing one here would risk rejecting a legitimate scrape on an unverified
-// assumption, the same "don't fabricate structure that isn't actually confirmed"
-// discipline the parser applies to narrative wording.
+// Validates the scraped page's own URL before trusting anything scraped from it. Only
+// asserts what host_permissions (`https://*.finalwhistle.org/*`) already restricts
+// network access to — protocol, hostname (including subdomains, matching that same
+// wildcard pattern), and no embedded port/credentials. Deliberately does NOT assert an
+// exact match-report path shape (e.g. a fixed /en/match/<uuid> pattern) — this project
+// has no confirmed evidence FinalWhistle's path is always that shape, and guessing one
+// here would risk rejecting a legitimate scrape on an unverified assumption, the same
+// "don't fabricate structure that isn't actually confirmed" discipline the parser
+// applies to narrative wording.
 function canonicalMatchUrl(value) {
   if (typeof value !== 'string' || value.length > 2000) return null;
   let url;

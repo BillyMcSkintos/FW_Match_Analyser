@@ -56,6 +56,18 @@ data leaves the browser. That claim isn't just asserted:
 - `scraper.js`'s `canonicalMatchUrl()` strictly validates the page URL (protocol,
   hostname, no embedded credentials/port) before scraping anything at all.
 
+Two permission/storage choices worth noting explicitly, since a narrower-looking
+alternative exists for each and isn't used:
+- **`chrome.storage.local`, not `.session`** — `.session` is cleared on browser
+  restart; this extension's **Load** button reopens the last scrape from storage
+  specifically so it survives that, so `.local`'s persistence is required, not just
+  convenient.
+- **`tabs` permission, not `activeTab`-only** — `background.js` queries other
+  FinalWhistle tabs by URL (`chrome.tabs.query`, "prefer an actual `/match/` tab") and
+  **New Tab** opens/focuses tabs the user isn't currently on. `activeTab` alone only
+  grants access to whichever tab is focused when the toolbar icon is clicked — it can't
+  see or target any other tab, which both of those features need.
+
 ## Evidence model
 
 Everything this extension shows falls into one of four categories, and the distinction

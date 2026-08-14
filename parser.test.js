@@ -1342,7 +1342,7 @@ test('an opportunity with no matching stream block reports none confidence', () 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase B — Tactical Truth: tacticalStateAt, buildTacticalPhases, opportunity association
+// Tactical state: tacticalStateAt, buildTacticalPhases, opportunity association
 // ─────────────────────────────────────────────────────────────────────────────
 
 function midOppLines(team, passer, target, defender) {
@@ -1407,8 +1407,9 @@ test('a mentality change updates teamState.mentality from the point it occurs', 
 
 test('a "Change order to X" line updates teamState.middleOrder, never teamState.style', () => {
   // The source line is ambiguous between the manual's team-wide Style of Play and a
-  // per-zone Player Order (see parser.js's B1 audit comment) — nothing may write to the
-  // field literally named `style` until that ambiguity is resolved against real evidence.
+  // per-zone Player Order (see parser.js's tactical-construct audit comment) — nothing
+  // may write to the field literally named `style` until that ambiguity is resolved
+  // against real evidence.
   const narrative = ['Minute 10', 'Home Team - Issued order- Change order to SHORT_PASSES'].join('\n');
   const match = parseMatch('', narrative, HA);
   const state = tacticalStateAt(match, 'home', 90, 999);
@@ -1491,10 +1492,10 @@ test('two consecutive substitutions both apply correctly and independently', () 
 });
 
 test('multiple tactical changes in the same minute preserve narrative sequence order', () => {
-  // Mirrors the worked example in the Phase B spec: a position move, a substitution and a
-  // mentality change all issued at 62', immediately followed by an opportunity. The state
-  // seen by that opportunity must reflect all three changes, in the order they actually
-  // appeared — not an ambiguous "some subset of same-minute events" guess.
+  // A position move, a substitution and a mentality change all issued at 62',
+  // immediately followed by an opportunity. The state seen by that opportunity must
+  // reflect all three changes, in the order they actually appeared — not an ambiguous
+  // "some subset of same-minute events" guess.
   const narrative = [
     'Minute 62',
     'Home Team - Issued order- Player X [FW] was moved to LM',

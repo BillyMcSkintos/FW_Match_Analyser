@@ -115,7 +115,7 @@ test('a genuinely missing core input (no team names) still leaves the scrape not
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase D (D5) — remaining scraper.js coverage
+// Remaining scraper.js coverage
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('team-name extraction: first h5 link is home, second is away', () => {
@@ -240,7 +240,7 @@ test('opportunity-count / telemetry start-count sanity check: a mismatch produce
 });
 
 // ── waitForStable: minimal fake MutationObserver, no jsdom dependency ───────────────
-// A hand-rolled DOM stub is "enough" here (D5) — the only real DOM surface waitForStable
+// A hand-rolled DOM stub is "enough" here — the only real DOM surface waitForStable
 // touches is document.body (passed straight to MutationObserver.observe, never read) and
 // MutationObserver itself, both trivially fakeable without a full DOM library. Real
 // setTimeout/clearTimeout are used with intentionally small timeout/stableMs values so
@@ -292,7 +292,7 @@ test('waitForStable resolves stable:false if measure() keeps changing past the h
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// canonicalMatchUrl — reviewed against a fork's independent hardening pass
+// canonicalMatchUrl
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('canonicalMatchUrl accepts finalwhistle.org and its subdomains over https', () => {

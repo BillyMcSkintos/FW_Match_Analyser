@@ -1,5 +1,5 @@
 'use strict';
-// Phase D (D4) — end-to-end parser → analytics integration tests.
+// End-to-end parser → analytics integration tests.
 //
 // parser.test.js and analytics.test.js each test ONE layer in isolation with
 // hand-built fixtures. That leaves a real gap: a parser change can keep every
@@ -16,7 +16,7 @@
 //      so a bug in analytics.js's OWN counting logic doesn't cancel out against an
 //      equally-wrong expectation baked into the same code path;
 //   2. targeted CONTRACTS between the layers (tactical phase IDs vs. opportunity
-//      context, counter-attack step ownership, Phase A confidence propagation) rather
+//      context, counter-attack step ownership, validation-confidence propagation) rather
 //      than re-testing every unit already covered in parser.test.js/analytics.test.js.
 //
 // Run with:  node --test integration.test.js
@@ -98,8 +98,9 @@ for (const name of fixtureNames()) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('contract: every opportunity\'s tacticalContext phase id exists in match.tacticalPhases for that side', () => {
-  // Catches exactly the regression D4 names: tactical phase IDs silently stop matching
-  // opportunity context (e.g. buildTacticalPhases and phaseIdAt drifting out of sync).
+  // Catches tactical phase IDs silently drifting out of sync with opportunity context
+  // (e.g. buildTacticalPhases and phaseIdAt disagreeing after an independent change to
+  // either one).
   for (const name of fixtureNames()) {
     const { narrative, telemetry } = loadFixture(name);
     const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
@@ -125,7 +126,7 @@ test('contract: tactical-phase-transition opportunities land in the correct phas
   assert.equal(perf[0].ownOpportunities, 1);
   assert.equal(perf[1].ownOpportunities, 1);
 
-  // C4/before-after contract: comparing around the mentality-change event must not
+  // Before-after contract: comparing around the mentality-change event must not
   // throw and must report the same 1-vs-1 split, labeled as an association.
   const event = match.tacticalEvents.find(e => e.type === 'MENTALITY_CHANGE');
   const cmp = A.compareAroundEvent(match, event.id, { beforeMinutes: 90, afterMinutes: 90 });
@@ -153,11 +154,11 @@ test('contract: counter-attack step ownership survives the full parser→analyti
   assert.equal(chain.defendingSide, 'home');
 });
 
-test('contract: degraded Phase A alignment propagates through every analytics confidence field exercised here', () => {
+test('contract: degraded parser validation propagates through every analytics confidence field exercised here', () => {
   const { narrative, telemetry } = loadFixture('degraded-alignment');
   const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
   assert.equal(match.validation.confidence, 'degraded');
-  assert.equal(A.phaseAConfidence(match), 'degraded');
+  assert.equal(A.parserConfidence(match), 'degraded');
   assert.equal(A.opportunityFunnel(match).confidence, 'degraded');
   assert.equal(A.assistanceAnalysis(match).confidence, 'degraded');
   assert.equal(A.phasePerformance(match, 'home')[0].confidence, 'degraded');
