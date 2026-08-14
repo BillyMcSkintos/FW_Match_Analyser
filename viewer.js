@@ -1,4 +1,30 @@
 'use strict';
+
+/**
+ * FinalWhistle Match Analyser — viewer
+ *
+ * Renders the extension's UI from a parsed match (see parser.js): the pitch
+ * visualization, opportunity list, match timeline, and the Statistics/Phases/
+ * Squad/Narrative/Telemetry tabs. Single file, no build step. Sections below
+ * run roughly outside-in — small drawing helpers first, then the top-level
+ * render() that wires a scrape result to the whole page, then interaction
+ * wiring at the bottom:
+ *
+ *   COLOURS                     – shared color constants (home/away/goal/etc.)
+ *   PITCH GEOMETRY              – SVG coordinate constants for the pitch
+ *   STEPS → CHAIN SUMMARY       – adapts parser.js's steps[] into pitch-drawing shape
+ *   PITCH OUTLINE / BASE FLOW /
+ *   HIGHLIGHT CHAIN / MINI CHAIN – the pitch's SVG layers
+ *   PASS SUMMARY / STEP DETAIL /
+ *   TACTICAL EVENTS             – opportunity detail panels
+ *   MATCH TIMELINE              – the 0–90' marker strip above the opportunity list
+ *   OPPORTUNITY LIST RENDERING  – the scrollable list of opportunity rows
+ *   STATS PANEL / PHASES / SQUAD – the other tab bodies
+ *   MAIN RENDER                 – render(scrape): parse + populate every panel
+ *   HOVER / CLICK INTERACTIONS  – preview-on-hover, pin-on-click, timeline sync
+ *   TABS / EVENT DELEGATION /
+ *   BUTTONS                     – wiring at the bottom of the file
+ */
 const $ = id => document.getElementById(id);
 
 // ─────────────────────────────────────────────────────────────────────────────

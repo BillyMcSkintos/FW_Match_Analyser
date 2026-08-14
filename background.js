@@ -1,4 +1,10 @@
 'use strict';
+
+/**
+ * Extension service worker. Toolbar icon click opens/focuses the viewer tab;
+ * SCRAPE_PAGE messages from viewer.js are relayed here and fulfilled by
+ * injecting scraper.js into the active FinalWhistle tab via chrome.scripting.
+ */
 importScripts('utils.js');
 
 chrome.action.onClicked.addListener(async () => {
