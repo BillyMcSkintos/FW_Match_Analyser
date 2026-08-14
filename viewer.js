@@ -929,7 +929,11 @@ function renderTacticalRow(ev) {
       break;
     case 'STYLE_CHANGE':
       icon = '⚙';
-      text = `Style <span class="p-arr">→</span> ${escapeHtml(ev.style)}${impactTag(ev)}`;
+      // Labeled "Middle order", not "Style" — the source line doesn't establish whether
+      // this is the manual's team-wide Style of Play or a per-zone player order (see
+      // parser.js's B1 audit comment). "Style →" would prime a reader toward the same
+      // unproven reading Phase C must not encode either.
+      text = `Middle order <span class="p-arr">→</span> ${escapeHtml(ev.style)}${impactTag(ev)}`;
       break;
     case 'ISOLATE':
       icon = '🎯';
@@ -1521,6 +1525,42 @@ function renderTirednessGroup(g, col) {
   </div>`;
 }
 
+// ── Tactical Phases (Phase B) ────────────────────────────────────────────────────────
+// A compact timeline answering "when did this team's configuration change, and what
+// changed": one card per dynamic tactical phase (parser.js's buildTacticalPhases —
+// starts a new phase only on a material change, never on an opportunity/shot/score/
+// tiredness alone). Added as a new section within the existing Squad tab rather than a
+// new tab or a rewrite — the tab already deals in per-team tacticalEvents, and the fixed
+// 0–30/30–45/45–70/70–90 window comparison on the separate Phases tab is untouched.
+// Only fields parser.js actually populated are shown; an unpopulated setting (marking,
+// defence focus, preferred side, offside, player orders, aggression, arrows — none of
+// these are exposed by the narrative constructs this parser currently recognizes, see
+// parser.js's B1 audit comment) renders as "—", never guessed or filled in.
+function renderTacticalPhaseRow(phase, col) {
+  const period = phase.endMinute != null ? `${phase.startMinute}–${phase.endMinute}'` : `${phase.startMinute}'+`;
+  const ts = phase.state.teamState;
+  const mentality = ts.mentality || '—';
+  // teamState.style is intentionally never populated (see parser.js's initialTeamState
+  // comment) — the observed "Change order to X" value lives in middleOrder instead, and
+  // is labeled "Middle order" here rather than "Style" for the same reason.
+  const middleOrder = ts.middleOrder || '—';
+  const changes = phase.triggeredBy.length
+    ? phase.triggeredBy.map(renderTacticalRow).join('')
+    : '<div class="qt-hint">Initial state — no tactical changes observed yet.</div>';
+  return `<div style="margin-bottom:8px;padding:6px 8px;border-left:2px solid ${col};background:#0d1526">
+    <div style="font-size:11px;color:${col};font-weight:700">${escapeHtml(period)}</div>
+    <div class="qt-hint" style="margin:2px 0 4px">Mentality: ${escapeHtml(mentality)} &middot; Middle order: ${escapeHtml(middleOrder)}</div>
+    ${changes}
+  </div>`;
+}
+
+function renderTacticalPhasesSection(match, side, col) {
+  const phases = match.tacticalPhases?.[side] || [];
+  if (!phases.length) return '';
+  return `<div class="dist-title">Tactical Phases (${phases.length})</div>` +
+    phases.map(p => renderTacticalPhaseRow(p, col)).join('');
+}
+
 function renderSquadColumn(match, side) {
   const events = (match.tacticalEvents || []).filter(ev => ev.teamSide === side);
   const byMinute = (a, b) => (a.minute ?? 0) - (b.minute ?? 0);
@@ -1538,6 +1578,7 @@ function renderSquadColumn(match, side) {
 
   let html = `<div style="flex:1;min-width:0">`;
   html += `<div class="ps-team" style="color:${col};border-color:${col}44">${escapeHtml(teamName)}</div>`;
+  html += renderTacticalPhasesSection(match, side, col);
   html += section('Tiredness', tiredness.length, tiredness.map(g => renderTirednessGroup(g, col)).join(''), 'No tiredness reports.');
   html += section('Substitutions', subs.length, subs.map(renderTacticalRow).join(''), 'No substitutions.');
   html += section('Position Changes', posChanges.length, posChanges.map(renderTacticalRow).join(''), 'No position changes.');
@@ -1695,7 +1736,10 @@ function render(scrape) {
   let parseWarnings = [];
   if (scrape.narrative) {
     try {
-      _match = parseMatch(scrape.telemetry||'', scrape.narrative);
+      // Trusted scrape metadata (the site's own team-name elements) takes priority over
+      // parseMatch's own narrative/stream-based inference — see parser.js for why that
+      // matters when one team never creates a single matched opportunity.
+      _match = parseMatch(scrape.telemetry||'', scrape.narrative, { homeTeam: scrape.homeTeam, awayTeam: scrape.awayTeam });
       parseWarnings = _match.warnings || [];
       _statusEvents = [...(_match.tacticalEvents||[])].sort((a,b) => (a.minute??0) - (b.minute??0));
       _statusCache.clear();

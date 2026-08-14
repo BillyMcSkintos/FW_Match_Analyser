@@ -100,7 +100,11 @@ function fwScrape() {
   if (statsEl) {
     result.statistics = extractStatsTable(statsEl);
   } else {
-    result.errors.push('STATS_NOT_FOUND: activate Statistics tab first.');
+    // Narrative and telemetry are the core data a scrape needs to be useful at
+    // all; statistics are supplementary. A missing stats table shouldn't sink
+    // an otherwise-usable scrape into ok:false alongside a genuinely missing
+    // narrative or telemetry — it belongs in warnings, not errors.
+    result.warnings.push('STATS_NOT_FOUND: activate Statistics tab first.');
   }
 
   // ── 5. SANITY CHECK ──────────────────────────────────────────────────────
@@ -276,13 +280,62 @@ function waitForText(marker, timeout = 7500) {
 }
 
 /**
+ * Resolve once `measure()` stops changing for `stableMs`. A MutationObserver
+ * alone only reports THAT the DOM changed, not when it's done changing — the
+ * match report streams in over many small mutations, so reacting to the first
+ * one (as this used to, via waitForText/waitForElement resolving on first
+ * appearance) can catch a render mid-stream instead of complete. Re-arming a
+ * short "quiet timer" on every real mutation — rather than polling on a fixed
+ * interval or sleeping a fixed duration — means the wait ends as soon as
+ * things actually settle, and at most a handful of measurements happen (only
+ * right after a mutation), not dozens against an unchanged DOM.
+ *
+ * Resolves { value, stable } — `stable: false` means the hard timeout was hit
+ * while the measurement was still changing (or never got a chance to settle),
+ * so the caller can warn rather than silently trusting a possibly-incomplete
+ * render.
+ */
+function waitForStable(measure, { timeout = 7500, stableMs = 400 } = {}) {
+  return new Promise(resolve => {
+    let lastValue = measure();
+    let settleTimer = null;
+
+    const finish = (stable) => {
+      clearTimeout(settleTimer);
+      clearTimeout(hardTimer);
+      observer.disconnect();
+      resolve({ value: measure(), stable });
+    };
+
+    const armSettleTimer = () => {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => finish(true), stableMs);
+    };
+
+    const observer = new MutationObserver(() => {
+      const value = measure();
+      if (value !== lastValue) {
+        lastValue = value;
+        armSettleTimer();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    const hardTimer = setTimeout(() => finish(false), timeout);
+    armSettleTimer();
+  });
+}
+
+/**
  * Async entry point:
- * 1. Click fast-forward button → wait for match report to render
- * 2. Click telemetry toggle → wait for telemetry lines to render
+ * 1. Click fast-forward button → wait for the report to finish rendering
+ * 2. Click telemetry toggle → wait for telemetry lines to finish rendering
  * 3. Run fwScrape()
  */
 async function fwScrapeWithTelemetry() {
   const TIMEOUT_MS = 7500;
+  const STABLE_MS = 400;
+  const stabilityWarnings = [];
 
   // ── Step 1: Fast-forward to end of match ─────────────────────────────────
   // The match viewer has playback buttons. The fast-forward (skip-to-end)
@@ -313,7 +366,25 @@ async function fwScrapeWithTelemetry() {
 
     if (ffBtn) {
       ffBtn.click();
-      await waitForText('Opportunity for', TIMEOUT_MS);
+      // Prefer the report's own completion signal — the same "final whistle"
+      // line parser.js already recognizes and discards — over guessing when
+      // rendering is done. It's the fastest and most direct confirmation when
+      // FinalWhistle's DOM provides it.
+      const gotFinalWhistle = await waitForText('referee blew the final whistle', TIMEOUT_MS);
+      if (!gotFinalWhistle) {
+        // No end-of-report marker seen within budget — fall back to DOM
+        // stability: keep watching until the opportunity count stops
+        // changing for a short window, rather than trusting the first
+        // "Opportunity for" occurrence (which may be minute 1 of a 90-minute
+        // report still streaming in).
+        const { stable } = await waitForStable(
+          () => (document.body.textContent.match(/Opportunity for /g) || []).length,
+          { timeout: TIMEOUT_MS, stableMs: STABLE_MS }
+        );
+        if (!stable) {
+          stabilityWarnings.push('NARRATIVE_STABILITY_TIMEOUT: could not confirm the match report finished rendering before scraping — some opportunities may be missing.');
+        }
+      }
     } else {
       // Record button icons for debugging; stored so fwScrape can emit a warning
       window._fwFfMissed = [...document.querySelectorAll('button i[class*="bi-"]')]
@@ -326,9 +397,25 @@ async function fwScrapeWithTelemetry() {
     const btn = document.querySelector('button[title="Toggle Telemetry"]');
     if (btn) {
       btn.click();
-      await waitForElement('.telemetry-body .telemetry-line', TIMEOUT_MS);
+      const gotFirstLine = await waitForElement('.telemetry-body .telemetry-line', TIMEOUT_MS);
+      if (gotFirstLine) {
+        // Telemetry has no end-of-report text marker to watch for, so line-count
+        // stability is the only signal available — wait for it to stop growing
+        // rather than scraping right after the first line appears.
+        const { stable } = await waitForStable(
+          () => document.querySelectorAll('.telemetry-body .telemetry-line').length,
+          { timeout: TIMEOUT_MS, stableMs: STABLE_MS }
+        );
+        if (!stable) {
+          stabilityWarnings.push('TELEMETRY_STABILITY_TIMEOUT: could not confirm telemetry finished rendering before scraping — some values may be missing.');
+        }
+      } else {
+        stabilityWarnings.push('TELEMETRY_STABILITY_TIMEOUT: no telemetry lines appeared before timing out.');
+      }
     }
   }
 
-  return fwScrape();
+  const result = fwScrape();
+  result.warnings.push(...stabilityWarnings);
+  return result;
 }

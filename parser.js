@@ -58,14 +58,20 @@ function qv(n) {
 // STREAM PARSER
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Returns { tokens, unknownLines } rather than a bare array — a line that doesn't match
+// the expected shape used to be silently dropped with no record anywhere. FinalWhistle's
+// format changes without notice, so a token this parser doesn't recognize needs to be
+// visible as a diagnostic, not quietly discarded as if it never existed.
 function parseStreamTokens(streamText) {
   const RE = /^(\d+)'\s*-\s*([HA])\s*-\s*(\w+)(?:\s*-\s*\((\d+)\))?$/;
-  return streamText.split('\n').map(l => l.trim()).filter(Boolean).reduce((acc, line) => {
+  const tokens = [], unknownLines = [];
+  streamText.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
     const m = RE.exec(line);
-    if (m) acc.push({ minute: parseInt(m[1]), side: m[2], kind: m[3],
-                       value: m[4] !== undefined ? parseInt(m[4]) : null });
-    return acc;
-  }, []);
+    if (m) tokens.push({ minute: parseInt(m[1]), side: m[2], kind: m[3],
+                          value: m[4] !== undefined ? parseInt(m[4]) : null });
+    else unknownLines.push(line);
+  });
+  return { tokens, unknownLines };
 }
 
 function groupStreamBlocks(tokens) {
@@ -147,10 +153,75 @@ function buildStreamPhases(tokens) {
 // NARRATIVE PARSER  →  internal phases (converted to steps after stream merge)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Phase B (Tactical Truth) construct audit — reconciled against the FinalWhistle manual
+// (Tactics & Orders, Match Engine sections) and every narrative fixture in
+// parser.test.js. This is the source of truth for what this parser claims to support;
+// keep it in sync when adding/removing a tactical construct.
+//
+// OBSERVED — real "Issued order-"/admin lines this parser matches today:
+//   SUBSTITUTION, POSITION_CHANGE, MENTALITY_CHANGE, ISOLATE, TIREDNESS, INJURY,
+//   HALF_TIME. Of these, SUBSTITUTION/POSITION_CHANGE/TIREDNESS/HALF_TIME have direct
+//   fixture coverage (parser.test.js); MENTALITY_CHANGE/ISOLATE/INJURY do not — the
+//   regex was written against manual terminology and has no confirmed real-report
+//   fixture behind it yet. Not removed (nothing has ever demonstrated it wrong), but
+//   flagged rather than presented as fixture-proven.
+//
+// AMBIGUOUS — STYLE_CHANGE: the matched line is "Issued order- Change (middle )?order
+//   to X", which was assumed to mean the manual's team-wide "Style of Play" (Flexible /
+//   Creative Play / Pressing / Short Passes / Through Balls / Counter Attack / Long
+//   Balls). But the manual separately defines per-zone "Player Orders" ("At this moment
+//   only zone base orders are in use... MF player uses only midfield orders"), and
+//   "middle order" reads at least as naturally as a MIDFIELD-zone player order as it
+//   does a team-wide style change. No fixture or manual match-report example
+//   disambiguates this. The event `type` stays STYLE_CHANGE, unchanged, for backwards
+//   compatibility (viewer.js keys off the exact string) — but the ambiguity is NOT
+//   allowed to leak into tacticalStateAt's output: the observed value is written to
+//   teamState.middleOrder, a deliberately neutral field, and teamState.style is left
+//   permanently null. Every STYLE_CHANGE event also carries semanticType:
+//   'MIDDLE_ORDER_CHANGE' and interpretation: 'ambiguous' so a consumer can see the
+//   epistemic status without needing to have read this comment. This exists specifically
+//   so Phase C can never end up comparing "Short Passes vs Long Balls" against a value
+//   the source may not have actually meant.
+//
+// MANUAL-DEFINED, NOT OBSERVED — real FW mechanics per the manual with no narrative
+//   construct parsed for them anywhere in this codebase, and no fixture/report evidence
+//   they're even exposed as narrative text (as opposed to only being visible on the
+//   tactics-setup page): Marking (Zonal/Man to Man), Defence Focus, Preferred Side,
+//   Offside Trap, zone-based Player Orders (Attacker: Normal/Quick Shot/Power Shot/
+//   Heading Shot/Lob Shot/Demand High/Demand Low; Midfielder: Normal/Safe Pass/Risky
+//   Pass/Deflect Pass/Long Shot/Dribble 'n' Pass/Dribble 'n' Shoot; Defence: Normal/
+//   Aerial Control/Ground Control/Sliding Tackle; Goalkeeper: Normal/Interceptor/Sure
+//   Hands/Organizer), Attitude Orders (Neutral/Careful/Aggressive — FW's actual term for
+//   what would generically be called "aggression"), Arrow Orders (player arrows and the
+//   distinct goalkeeper arrow), Set Piece Orders (Corner: Cross/Restart; Free-kick:
+//   Shoot/Cross/Restart; Anchor), and Captain/Free-kick-taker/Corner-kick-taker
+//   assignment. None of these get an event parser in Phase B — per the task's own
+//   fallback, a manual-defined mechanic with no observed narrative activation does not
+//   get a fabricated parser. Deferred pending real match-report samples showing these
+//   as narrative text (not just tactics-setup UI).
 function parseNarrative(narrativeText) {
   const ls = narrativeText.split('\n').map(l => l.trim()).filter(Boolean);
-  const opps = [], tactics = [], scoreByMin = {};
+  const opps = [], tactics = [], unknownNarrativeLines = [];
   let score = { home: 0, away: 0 }, minute = null, teamContext = null;
+  // Shared monotonic counter across BOTH opportunities and tactical events, assigned in
+  // true top-to-bottom narrative order (this single loop reads the report exactly as
+  // laid out) — this is what lets tacticalStateAt() later tell whether a tactical event
+  // fell before or after a same-minute opportunity, the same way Phase A's per-
+  // opportunity score snapshots fixed same-minute score ordering.
+  let seq = 0;
+  const nextSeq = () => seq++;
+  // Every tactical event goes through this so the normalized envelope (B2) is applied
+  // uniformly instead of hand-rolled per push site. `scope` follows a simple convention:
+  // 'player' when the event's payload is fundamentally about one (or two) named players
+  // (a sub, a position move, tiredness, an injury) even though a sub/position change also
+  // has team-wide phase-triggering consequences (see buildTacticalPhases); 'team' for a
+  // team-wide order (mentality, style, a special order like isolate); 'match' for
+  // whole-match markers (half time) that belong to neither side.
+  const mkEvent = (type, scope, fields, rawText) => {
+    const s = nextSeq();
+    return { id: `${type}-${minute ?? 'x'}-${s}`, sequence: s, minute, type, scope,
+             source: 'narrative', certainty: 'observed', rawText, ...fields };
+  };
 
   // Quick scan for team names
   const teamNames = new Set();
@@ -172,7 +243,15 @@ function parseNarrative(narrativeText) {
   };
   const flushOpp = () => {
     flushPhase();
-    if (currentOpp) { currentOpp.rawLines = currentRawLines.slice(); opps.push(currentOpp); }
+    if (currentOpp) {
+      currentOpp.rawLines = currentRawLines.slice();
+      // Snapshot the running score as it stands right when this opportunity's own content
+      // ends — in true narrative sequence order, not bucketed by minute. Two goals in the
+      // same minute previously both resolved to whichever bracket line came LAST in that
+      // minute, silently giving the earlier goal's opportunity the wrong scoreAfter too.
+      currentOpp.scoreAtEnd = { ...score };
+      opps.push(currentOpp);
+    }
     currentOpp = null; inCA = false; currentRawLines = [];
   };
   const startPhase = (type) => {
@@ -191,15 +270,15 @@ function parseNarrative(narrativeText) {
     if ((m = line.match(/^Minute (\d+)$/))) { minute = parseInt(m[1]); teamContext = null; continue; }
     if ((m = line.match(/^\[(\d+)-(\d+)\]$/))) {
       score = { home: parseInt(m[1]), away: parseInt(m[2]) };
-      if (minute !== null) scoreByMin[minute] = { ...score }; continue;
+      continue;
     }
-    if (/Half Time/.test(line))                    { tactics.push({ minute, type: 'HALF_TIME' }); continue; }
+    if (/Half Time/.test(line))                    { tactics.push(mkEvent('HALF_TIME', 'match', {}, line)); continue; }
     if (/referee blew the final whistle/.test(line)) continue;
 
     if ((m = line.match(/^(.+?) - (.+?) \[([A-Z]+)\] looks (very tired|tired)\.$/)))
-      { tactics.push({ minute, type: 'TIREDNESS', team: m[1].trim(),
+      { tactics.push(mkEvent('TIREDNESS', 'player', { team: m[1].trim(),
           player: { name: m[2].trim(), position: m[3] },
-          level: m[4] === 'very tired' ? 'VERY_TIRED' : 'TIRED' }); continue; }
+          level: m[4] === 'very tired' ? 'VERY_TIRED' : 'TIRED' }, line)); continue; }
 
     // Injury — appears inline within a phase, not as a standalone admin line, so it
     // has no team prefix. FinalWhistle only has two real injury tiers, Light and Severe
@@ -209,36 +288,45 @@ function parseNarrative(narrativeText) {
     if ((m = line.match(/^(.+?) \[([A-Z]+)\] has suffered an? (\w+ )?injury\.$/))) {
       const qualifier = m[3]?.trim().toLowerCase();
       const severity = qualifier === 'light' ? 'LIGHT' : qualifier === 'severe' ? 'SEVERE' : 'UNKNOWN';
-      tactics.push({ minute, type: 'INJURY',
-        player: { name: m[1].trim(), position: m[2] }, severity });
+      tactics.push(mkEvent('INJURY', 'player',
+        { player: { name: m[1].trim(), position: m[2] }, severity }, line));
       continue;
     }
 
     if (line.includes('Issued order-')) {
       const team = line.split(' - ')[0].trim();
       if      ((m = line.match(/Issued order- (.+?) \[([A-Z]+)\] was substituted with (.+)$/)))
-        tactics.push({ minute, type: 'SUBSTITUTION', team,
-          playerOut: { name: m[1].trim(), position: m[2] }, playerIn: parsePlayerToken(m[3].trim()) });
+        tactics.push(mkEvent('SUBSTITUTION', 'player', { team,
+          playerOut: { name: m[1].trim(), position: m[2] }, playerIn: parsePlayerToken(m[3].trim()) }, line));
       else if ((m = line.match(/Issued order- (.+?) \[([A-Z]+)\] was moved to ([A-Z]+)$/)))
-        tactics.push({ minute, type: 'POSITION_CHANGE', team,
-          player: { name: m[1].trim(), position: m[2] }, toPosition: m[3] });
+        tactics.push(mkEvent('POSITION_CHANGE', 'player', { team,
+          player: { name: m[1].trim(), position: m[2] }, toPosition: m[3] }, line));
       else if ((m = line.match(/Issued order- Change mentality to ([A-Z_]+)$/)))
-        tactics.push({ minute, type: 'MENTALITY_CHANGE', team, mentality: m[1] });
+        tactics.push(mkEvent('MENTALITY_CHANGE', 'team', { team, mentality: m[1] }, line));
       else if ((m = line.match(/Issued order- Change (?:middle )?order to ([A-Z_]+)$/)))
-        tactics.push({ minute, type: 'STYLE_CHANGE', team, style: m[1] });
+        // `type` stays STYLE_CHANGE for backwards compatibility (viewer.js keys off this
+        // exact string in several places) — semanticType/interpretation carry the actual
+        // epistemic status honestly without a breaking rename. See initialTeamState's
+        // comment: this value is applied to teamState.middleOrder, never teamState.style.
+        tactics.push(mkEvent('STYLE_CHANGE', 'team', { team, style: m[1],
+          semanticType: 'MIDDLE_ORDER_CHANGE', interpretation: 'ambiguous' }, line));
       continue;
     }
 
     if ((m = line.match(/^Isolate Player - (.+?) \[([A-Z]+)\]$/)))
-      { tactics.push({ minute, type: 'ISOLATE', issuingTeam: teamContext,
-          target: { name: m[1].trim(), position: m[2] } }); teamContext = null; continue; }
+      { tactics.push(mkEvent('ISOLATE', 'team', { issuingTeam: teamContext,
+          target: { name: m[1].trim(), position: m[2] } }, line)); teamContext = null; continue; }
 
     if (teamNames.has(line)) { teamContext = line; continue; }
 
     // ── Opportunity ───────────────────────────────────────────────────────────
     if ((m = line.match(/^Opportunity for (.+?)\.$/))) {
       flushOpp();
-      currentOpp = { minute, team: m[1], phases: [], scoreAtStart: { ...score } };
+      // sequence assigned at the "Opportunity for X." line itself (not when the
+      // opportunity is later flushed) — that's its actual position in narrative order,
+      // which is what tacticalStateAt/buildTacticalPhases need to compare against a
+      // same-minute tactical event's own sequence number.
+      currentOpp = { minute, team: m[1], phases: [], scoreAtStart: { ...score }, sequence: nextSeq() };
       currentRawLines = [line]; inCA = false; continue;
     }
     if (/^Counter attack$/i.test(line)) { inCA = true; continue; }
@@ -359,6 +447,13 @@ function parseNarrative(narrativeText) {
 
     // Weak angle
     if (/has a weak angle/.test(line)) { currentPhase.shotAngle = 'weak'; continue; }
+    // Good angle — the direct positive counterpart of the above. Not stored as a value:
+    // viewer.js's step-detail rendering unconditionally shows "weak angle" text whenever
+    // shotAngle is truthy, so setting 'good' here without also fixing that rendering would
+    // silently mislabel a good-angle shot as weak. Properly supporting the distinction is
+    // tactical-state expansion, out of scope for this pass — recognized explicitly here so
+    // it isn't flagged as unknown wording either way.
+    if (/has a good angle/.test(line)) continue;
 
     // Long shot marker
     if (/Long Shot Goal Attempt/.test(line)) { currentPhase.isLongShot = true; continue; }
@@ -379,6 +474,13 @@ function parseNarrative(narrativeText) {
     // (isPenalty comes from the stream's E_PENALTY_KICK event), but explicitly
     // acknowledging it documents that it's expected, not an unrecognized line.
     if (line === 'Penalty') continue;
+
+    // GK beaten outright — no save attempt described (the shot needed none to beat him).
+    // Distinct from the "was X, and made Y effort to prevent goal." save-line pattern
+    // below, which always includes that trailing clause; this doesn't. No state to
+    // capture (the outcome comes from "GOAL!" or the stream's E_GOAL either way), but
+    // explicitly recognized rather than falling through as unknown.
+    if (/^(.+?) \[([A-Z]+)\] was fooled\.$/.test(line)) continue;
 
     // GK save line
     if ((m = line.match(/^(.+?) \[([A-Z]+)\] was .+?, and made \w+ effort to prevent goal\.$/))) {
@@ -408,19 +510,31 @@ function parseNarrative(narrativeText) {
 
     // GOAL
     if (line === 'GOAL!') { currentPhase.outcome = 'GOAL'; continue; }
+
+    // Reached without matching any phase-content pattern above — capture it as unknown
+    // rather than silently dropping it, so a FinalWhistle wording change becomes visible
+    // instead of quietly losing information. Deliberately scoped to phase content only
+    // (currentPhase is truthy here, past the `if (!currentPhase) continue;` guard above)
+    // rather than every line outside a phase — most of those are genuinely decorative
+    // headers/separators, and flagging them too would flood diagnostics with noise
+    // instead of surfacing real drift.
+    unknownNarrativeLines.push({ minute, line });
   }
 
   flushOpp();
 
-  // Determine home/away from first opportunity appearance
+  // Determine home/away from first opportunity appearance. Note: parseMatch() re-resolves
+  // this itself (preferring trusted scrape metadata, falling back to matching narrative
+  // opportunities against stream sides) and overwrites opp.teamSide unconditionally, so
+  // this is only ever the answer for a caller that uses parseNarrative() directly.
   const allTeams = [...new Set(opps.map(o => o.team))];
   const homeTeam = allTeams[0] || null;
   const awayTeam = allTeams[1] || null;
   for (const opp of opps) opp.teamSide = opp.team === homeTeam ? 'home' : 'away';
   for (const ev of tactics) if (ev.team) ev.teamSide = ev.team === homeTeam ? 'home' : ev.team === awayTeam ? 'away' : null;
 
-  return { opportunities: opps, tacticalEvents: tactics, scoreByMinute: scoreByMin,
-           teamNames, homeTeam, awayTeam, finalScore: score };
+  return { opportunities: opps, tacticalEvents: tactics,
+           teamNames, homeTeam, awayTeam, finalScore: score, unknownNarrativeLines };
 }
 
 // Outcomes that represent how a passage of play actually ended — once one of these is
@@ -638,17 +752,13 @@ function assignSides(phases, attackTeam, attackSide, defendTeam, defendSide) {
   }
 }
 
-function buildOpportunitySteps(narPhases, streamPhases, startType, warnings) {
-  // Flatten stream phases including any CA sub-block phases
-  // Stream phases map 1:1 with narrative phases in sequence order — if the
-  // counts diverge, every value past the divergence point silently attaches
-  // to the wrong narrative phase, so surface it instead of guessing.
+// Stream phases map 1:1 with narrative phases in sequence order — if the counts diverge,
+// every value past the divergence point silently attaches to the wrong narrative phase.
+// The mismatch itself is tracked structurally by parseMatch() (which already has both
+// counts on hand building validation.phaseMismatches) and surfaced as a warning from
+// there, rather than this function pushing a duplicate string into a passed-in array.
+function buildOpportunitySteps(narPhases, streamPhases, startType) {
   const steps = [];
-  if (streamPhases.length && narPhases.length !== streamPhases.length) {
-    warnings?.push(`PHASE_COUNT_MISMATCH: ${narPhases.length} narrative phase(s) vs ` +
-      `${streamPhases.length} stream phase(s) — values may be misattributed.`);
-  }
-
   for (let i = 0; i < narPhases.length; i++) {
     const sp = streamPhases[i] || { values: {}, events: [] };
     const np = narPhases[i];
@@ -675,12 +785,20 @@ function buildOpportunitySteps(narPhases, streamPhases, startType, warnings) {
 // SCORE + REGISTRY
 // ─────────────────────────────────────────────────────────────────────────────
 
-function annotateScores(opportunities, scoreByMinute) {
-  let running = { home: 0, away: 0 };
-  for (const opp of opportunities) {
-    opp.scoreBefore = { ...running };
-    if (opp.hasGoal && scoreByMinute[opp.minute]) running = { ...scoreByMinute[opp.minute] };
-    opp.scoreAfter = { ...running };
+// narOpps and opportunities are built in the same order from the same source loop (one
+// opportunities.push() per narOpps iteration in parseMatch), so they're guaranteed
+// index-aligned — reading scoreAtStart/scoreAtEnd directly off each narOpp avoids a
+// minute-keyed lookup entirely. That lookup was the actual bug: two goals in the same
+// minute both resolved to whichever score bracket came LAST in that minute, so the
+// earlier goal's own opportunity silently got the wrong scoreAfter. Per-opportunity
+// snapshots, captured by parseNarrative in true narrative sequence order, don't have that
+// ambiguity — each opportunity's own scoreAtEnd is whatever the score genuinely was right
+// when ITS content finished, not whichever bracket a minute happened to end on.
+function annotateScores(narOpps, opportunities) {
+  for (let i = 0; i < opportunities.length; i++) {
+    const narOpp = narOpps[i], opp = opportunities[i];
+    opp.scoreBefore = narOpp.scoreAtStart ? { ...narOpp.scoreAtStart } : { home: 0, away: 0 };
+    opp.scoreAfter  = narOpp.scoreAtEnd   ? { ...narOpp.scoreAtEnd }   : opp.scoreBefore;
   }
 }
 
@@ -704,6 +822,12 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
     if (ev.type === 'SUBSTITUTION')    { upsert({...ev.playerOut,...t}); upsert({...ev.playerIn,...t}); }
     if (ev.type === 'POSITION_CHANGE') upsert({...ev.player,...t});
     if (ev.type === 'TIREDNESS')       upsert({...ev.player,...t});
+    // INJURY's narrative line has no team prefix at all (see parseNarrative), so `t` is
+    // always null here — this still registers the player's name/position so a player
+    // whose only mention in the whole match is an injury report isn't dropped entirely.
+    // Their team/side, if resolvable at all, comes from wherever else they're observed
+    // (a step, another tactical event) — see parseMatch's post-registry teamSide pass.
+    if (ev.type === 'INJURY')          upsert({...ev.player,...t});
   }
   const result = {};
   for (const [name, d] of Object.entries(reg))
@@ -712,15 +836,267 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TACTICAL STATE  (Phase B — Tactical Truth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// B3: initial tactical state. No FinalWhistle scrape source currently supplies initial
+// lineup/tactics settings — only what the narrative itself reports as CHANGES — so every
+// field starts unknown. Convention: `null` everywhere, chosen over the string 'unknown' so
+// there's exactly one falsy "nothing here" value to check throughout this module. Never
+// derive any of this from opportunity patterns (e.g. guessing initial mentality from
+// opportunity volume) — that would be INFERRED, not OBSERVED/DERIVED, and Phase B is
+// explicitly scoped to the latter two.
+//
+// `formation` is deliberately NOT a field here — see deriveFormation below, computed
+// separately from `players` at query time so a DERIVED value never sits inside the same
+// object as fields that are purely OBSERVED-via-events, keeping the OBSERVED/DERIVED
+// distinction visible in the shape of the data, not just in a comment.
+// `style` vs `middleOrder`: STYLE_CHANGE's source line ("Issued order- Change (middle )?
+// order to X") is ambiguous between the manual's team-wide Style of Play and a per-zone
+// Player Order (see the B1 audit comment above parseNarrative) — nothing establishes
+// which one it actually is. `style` therefore stays permanently null; the observed value
+// is written to the neutral `middleOrder` field instead by tacticalStateAt. `style`
+// stays in this shape only so a future confirmed Style-of-Play source has somewhere to
+// go without a further schema change — it is never populated by STYLE_CHANGE today, and
+// nothing should read it as if it means anything until it is.
+function initialTeamState() {
+  return {
+    mentality: null, style: null, middleOrder: null, marking: null, defenceFocus: null,
+    preferredSide: null, offside: null, playerOrders: null, aggression: null, arrows: null,
+    // isolate: zone-sensitive per the manual ("Isolate player (Penalty Box & Midfield)"),
+    // but the narrative line ("Isolate Player - X [POS]") never names a zone — only the
+    // target player — so `zone` stays null rather than guessed as PB/Midfield/both. An
+    // array (not a single slot) to hold the shape the manual implies even though only one
+    // player can be isolated at a time — a new ISOLATE order replaces this array's single
+    // entry, it does not accumulate.
+    specialOrders: { isolate: [] },
+  };
+}
+
+// B5: player state kept structurally separate from team state (not flattened together).
+// A player only enters this map once they're first observed — there is no initial-lineup
+// scrape source to seed a full 11-a-side roster from — so `onPitch` only ever reflects
+// "we have evidence this player is out there", never a real starting-XI-vs-bench fact for
+// someone never mentioned at all.
+function initialPlayerState(name, position) {
+  return { name, position: position || null, onPitch: true, order: null, aggression: null,
+           arrow: null, tiredness: null, injury: null };
+}
+
+// B7: structural formation derived from currently-known on-pitch player positions.
+// Deliberately no human-friendly "4-4-2" label: with no initial-lineup source, `players`
+// is built up entirely from narrative mentions observed so far, so having all 11 on-pitch
+// players known at any given moment will be rare — a shorthand label would misrepresent a
+// partial squad as the whole picture nearly every time it was shown. `complete` tells a
+// caller whether this is actually the full XI or a partial reconstruction.
+const POSITION_ZONE = {
+  GK: 'GK',
+  CB: 'DEF', LB: 'DEF', RB: 'DEF', LWB: 'DEF', RWB: 'DEF',
+  DM: 'DM',
+  CM: 'MID', LM: 'MID', RM: 'MID',
+  OM: 'OM', LW: 'OM', RW: 'OM',
+  FW: 'FW',
+};
+function deriveFormation(players) {
+  const counts = { GK: 0, DEF: 0, DM: 0, MID: 0, OM: 0, FW: 0 };
+  let playerCount = 0;
+  for (const p of Object.values(players)) {
+    if (!p.onPitch || !p.position) continue;
+    const zone = POSITION_ZONE[p.position];
+    if (!zone) continue;
+    counts[zone]++;
+    playerCount++;
+  }
+  return { counts, playerCount, complete: playerCount === 11 };
+}
+
+// B4/B5: reconstructs a team's tactical state (team-level settings + every known
+// player's state) at a specific point in the match. Pure — never mutates `match`.
+//
+// Same-minute ordering uses `sequence`, exactly the way Phase A's annotateScores uses
+// narrative sequence instead of a minute-keyed lookup for scores: two tactical events (or
+// an event and an opportunity) at the same minute are still strictly ordered by when they
+// actually appeared in the report.
+//
+// `sequence` is optional. Without it, any event sharing the EXACT requested minute is
+// ambiguous — did it happen before or after the moment being asked about? Rather than
+// silently guessing either way, that boundary is marked `uncertain: true` and same-minute
+// events are excluded from the applied state (i.e. this returns the last state that was
+// UNAMBIGUOUSLY established before the requested minute).
+function tacticalStateAt(match, teamSide, minute, sequence) {
+  const allEvents = match?.tacticalEvents || [];
+
+  const isBefore = (ev) => {
+    if (ev.minute == null || minute == null) return false;
+    if (ev.minute < minute) return true;
+    if (ev.minute > minute) return false;
+    if (sequence == null) return false; // same minute, no way to disambiguate — exclude
+    return ev.sequence != null && ev.sequence < sequence;
+  };
+
+  const relevant = allEvents.filter(ev => ev.scope === 'match' || ev.teamSide === teamSide);
+  const uncertain = sequence == null &&
+    relevant.some(ev => ev.minute === minute);
+
+  const applied = relevant.filter(isBefore).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+
+  const teamState = initialTeamState();
+  const players = {};
+  const ensurePlayer = (p) => {
+    if (!p?.name) return null;
+    if (!players[p.name]) players[p.name] = initialPlayerState(p.name, p.position);
+    else if (p.position && !players[p.name].position) players[p.name].position = p.position;
+    return players[p.name];
+  };
+
+  for (const ev of applied) {
+    switch (ev.type) {
+      case 'MENTALITY_CHANGE':
+        teamState.mentality = ev.mentality; break;
+      case 'STYLE_CHANGE':
+        // Deliberately NOT teamState.style — see initialTeamState's comment. Writing an
+        // unresolved-mechanic event into a field literally named `style` would let a
+        // later consumer (Phase C) compare "Short Passes vs Long Balls" when the source
+        // may actually have said something else entirely (a per-zone player order).
+        // `middleOrder` is the honest, neutral name for "value observed in this line".
+        teamState.middleOrder = ev.style; break;
+      case 'ISOLATE':
+        // Special Order set by the issuing team, targeting an OPPONENT player (per the
+        // manual's Conditional Orders section: "Then Isolate - isolate one of the
+        // opponent players") — it's the issuing team's own tactical state that changed
+        // ("who we are currently isolating"), not a fact about the target player
+        // themself, so it lives here rather than mutating that player's own record.
+        // A new order replaces the array's single entry (the manual: "you can choose to
+        // isolate only one player") rather than accumulating one per event.
+        teamState.specialOrders = { ...teamState.specialOrders,
+          isolate: [{ player: ev.target || null, zone: null }] };
+        break;
+      case 'SUBSTITUTION': {
+        const out = ensurePlayer(ev.playerOut);
+        if (out) out.onPitch = false;
+        const inP = ensurePlayer(ev.playerIn);
+        if (inP) {
+          inP.onPitch = true;
+          // Only what FinalWhistle actually states about the incoming player (their
+          // identity/position) — never inherit the outgoing player's order/aggression/
+          // arrow. Nothing here copies those fields across players, by construction.
+          if (ev.playerIn?.position) inP.position = ev.playerIn.position;
+        }
+        break;
+      }
+      case 'POSITION_CHANGE': {
+        const p = ensurePlayer(ev.player);
+        if (p) p.position = ev.toPosition;
+        break;
+      }
+      case 'TIREDNESS': {
+        const p = ensurePlayer(ev.player);
+        if (p) p.tiredness = ev.level;
+        break;
+      }
+      case 'INJURY': {
+        const p = ensurePlayer(ev.player);
+        if (p) p.injury = ev.severity;
+        break;
+      }
+      case 'HALF_TIME':
+        // Same rule already established by viewer.js's playerStatusAt: a first-half
+        // tiredness report doesn't carry into the second half (no way to reconstruct the
+        // Constitution half-time recovery bonus without hidden CO state), but injuries
+        // persist — FinalWhistle injuries don't heal at the break.
+        for (const name of Object.keys(players)) players[name].tiredness = null;
+        break;
+    }
+  }
+
+  return {
+    teamState, players, formation: deriveFormation(players),
+    uncertain, asOf: { minute, sequence: sequence ?? null },
+  };
+}
+
+// B8: a new tactical phase begins only on a MATERIAL state change for `teamSide` —
+// mentality, style, a substitution, a position change, or an isolate order (the only
+// change types Phase B actually observes; see the B1 audit comment above parseNarrative
+// for what's deliberately excluded). An opportunity, a shot, a tiredness report, or a
+// score change never splits a phase on its own (B8/B14) — they're still readable as
+// context via tacticalStateAt for any minute inside whichever phase they fall in.
+const PHASE_TRIGGER_TYPES = new Set(['MENTALITY_CHANGE', 'STYLE_CHANGE', 'SUBSTITUTION', 'POSITION_CHANGE', 'ISOLATE']);
+
+function buildTacticalPhases(match, teamSide) {
+  const triggers = (match?.tacticalEvents || [])
+    .filter(ev => PHASE_TRIGGER_TYPES.has(ev.type) && ev.teamSide === teamSide)
+    .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+
+  // Multiple material changes issued in the same minute (e.g. a substitution, a position
+  // move and a mentality change all at 62') form ONE phase transition, not one micro-phase
+  // per event — they read as a single tactical adjustment. Sequence order still fully
+  // determines what counts as before/after this boundary for opportunity association
+  // (B9); grouping by minute only changes how many rows the phase LIST itself shows.
+  const groups = [];
+  for (const ev of triggers) {
+    const last = groups[groups.length - 1];
+    if (last && last.minute === ev.minute) last.events.push(ev);
+    else groups.push({ minute: ev.minute, events: [ev] });
+  }
+
+  const boundaries = [
+    { minute: 0, sequence: -1, events: [] }, // Phase 1: match start, initial (unknown) state
+    ...groups.map(g => ({ minute: g.minute, sequence: g.events[g.events.length - 1].sequence, events: g.events })),
+  ];
+
+  return boundaries.map((b, i) => {
+    const next = boundaries[i + 1];
+    // sequence+1 so the state includes this boundary's own triggering event(s) — without
+    // it, tacticalStateAt would exclude the very changes that just defined this phase.
+    const state = tacticalStateAt(match, teamSide, b.minute, b.sequence + 1);
+    return {
+      id: `${teamSide}-phase-${i}`,
+      teamSide,
+      startMinute: b.minute, startSequence: b.sequence,
+      endMinute: next ? next.minute : null, endSequence: next ? next.sequence : null,
+      state,
+      // The full triggering event objects, not a stripped-down copy — so a UI consumer
+      // (or a test) can reuse the same per-type rendering it already has for the tactical
+      // event timeline, rather than needing a second, parallel formatting path just for
+      // phase-boundary descriptions.
+      triggeredBy: b.events,
+      certainty: 'derived',
+    };
+  });
+}
+
+// B9: which tactical phase (by id) covers a given narrative sequence position. Opportunity
+// sequences are always strictly between two distinct trigger sequences (or before the
+// first / after the last) since every opportunity and every tactical event draws from the
+// same shared, never-repeated counter — so the boundary comparison below never has to
+// resolve a tie between an opportunity and the trigger that defines a phase edge.
+function phaseIdAt(phases, sequence) {
+  for (const phase of phases) {
+    if (sequence > phase.startSequence && (phase.endSequence == null || sequence <= phase.endSequence))
+      return phase.id;
+  }
+  return phases.length ? phases[phases.length - 1].id : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parseMatch(streamText, narrativeText) {
-  const warnings     = [];
-  const streamTokens = parseStreamTokens(streamText);
+/**
+ * @param {string} streamText
+ * @param {string} narrativeText
+ * @param {{homeTeam?: string, awayTeam?: string}} [meta] — trusted scrape metadata (the
+ *   site's own team-name elements). Authoritative when both are provided; without it, team
+ *   identity falls back to matching narrative opportunities against stream attacking sides,
+ *   which has no way to resolve a team that never had a single matched opportunity.
+ */
+function parseMatch(streamText, narrativeText, meta) {
+  const warnings = [];
+  const { tokens: streamTokens, unknownLines: unknownTelemetryLines } = parseStreamTokens(streamText);
   const streamBlocks = groupStreamBlocks(streamTokens);
   const narResult    = parseNarrative(narrativeText);
-  const { opportunities: narOpps, tacticalEvents, scoreByMinute, finalScore } = narResult;
+  const { opportunities: narOpps, tacticalEvents, unknownNarrativeLines, finalScore } = narResult;
 
   // Build stream lookup by minute
   const streamByMinute = {};
@@ -730,32 +1106,53 @@ function parseMatch(streamText, narrativeText) {
   };
   for (const b of streamBlocks) indexBlock(b);
 
-  // Map H/A → team names from first matching opportunity
-  const teamMap = { H: null, A: null };
-  const narrativeTeams = [...new Set(narOpps.map(o => o.team))];
-  for (const narOpp of narOpps) {
-    const candidates = (streamByMinute[narOpp.minute] || []);
-    if (candidates.length) {
-      const side = candidates[0].attackingSide;
-      if (!teamMap[side]) teamMap[side] = narOpp.team;
-      const oSide = side === 'H' ? 'A' : 'H';
-      if (!teamMap[oSide]) {
-        teamMap[oSide] = narrativeTeams.find(t => t !== narOpp.team) || null;
+  // Map H/A → team names. Trusted metadata wins outright — it's the page's own labeling,
+  // not an inference, and it's the only way to resolve a team that never created a single
+  // matched opportunity (inference has nothing to anchor to for that team at all). Without
+  // it, fall back to matching each narrative opportunity's team against whichever stream
+  // side attacked at that minute.
+  let homeTeam = null, awayTeam = null;
+  if (meta?.homeTeam && meta?.awayTeam) {
+    homeTeam = meta.homeTeam;
+    awayTeam = meta.awayTeam;
+  } else {
+    const teamMap = { H: null, A: null };
+    const narrativeTeams = [...new Set(narOpps.map(o => o.team))];
+    for (const narOpp of narOpps) {
+      const candidates = (streamByMinute[narOpp.minute] || []);
+      if (candidates.length) {
+        const side = candidates[0].attackingSide;
+        if (!teamMap[side]) teamMap[side] = narOpp.team;
+        const oSide = side === 'H' ? 'A' : 'H';
+        if (!teamMap[oSide]) {
+          teamMap[oSide] = narrativeTeams.find(t => t !== narOpp.team) || null;
+        }
+        if (teamMap.H && teamMap.A) break;
       }
-      if (teamMap.H && teamMap.A) break;
     }
+    homeTeam = teamMap.H;
+    awayTeam = teamMap.A;
   }
 
-  const homeTeam   = teamMap.H;
-  const awayTeam   = teamMap.A;
   const sideOf     = t  => t  === homeTeam ? 'home' : t  === awayTeam ? 'away' : null;
   const streamSide = ts => ts === 'home'   ? 'H'    : 'A';
 
   for (const narOpp of narOpps) narOpp.teamSide = sideOf(narOpp.team);
-  for (const ev of tacticalEvents) if (ev.team) ev.teamSide = sideOf(ev.team);
+  // ISOLATE carries issuingTeam instead of team (it's a team-wide special order, not
+  // attributed the same way an "Issued order-" line is) — resolve its side here too so
+  // every team-scoped tactical event carries a usable teamSide, rather than leaving it to
+  // an ad-hoc fallback wherever the event happens to be consumed.
+  for (const ev of tacticalEvents) {
+    if (ev.team) ev.teamSide = sideOf(ev.team);
+    else if (ev.issuingTeam) ev.teamSide = sideOf(ev.issuingTeam);
+  }
 
   const blockCursors = {};
   const opportunities = [];
+  const consumedBlocks = new Set();
+  const matchedBlocks = [];
+  const unmatchedNarrativeBlocks = [];
+  const phaseMismatches = [];
 
   for (const narOpp of narOpps) {
     const ss  = streamSide(narOpp.teamSide);
@@ -774,6 +1171,13 @@ function parseMatch(streamText, narrativeText) {
     // Surfacing that here beats a confidently-wrong number with no way to tell.
     const streamMatchConfidence = !block ? 'none' : pool.length > 1 ? 'uncertain' : 'exact';
 
+    if (block) {
+      consumedBlocks.add(block);
+      matchedBlocks.push({ minute: narOpp.minute, side: ss, team: narOpp.team, confidence: streamMatchConfidence });
+    } else {
+      unmatchedNarrativeBlocks.push({ minute: narOpp.minute, side: ss, team: narOpp.team });
+    }
+
     const allStreamPhases = block
       ? [...block.phases, ...(block.counterAttack?.phases || [])]
       : [];
@@ -782,7 +1186,14 @@ function parseMatch(streamText, narrativeText) {
     const defSide = narOpp.teamSide === 'home' ? 'away' : 'home';
     assignSides(narOpp.phases, narOpp.team, narOpp.teamSide, defTeam, defSide);
 
-    const steps = buildOpportunitySteps(narOpp.phases, allStreamPhases, block?.startType || 'DEF', warnings);
+    const steps = buildOpportunitySteps(narOpp.phases, allStreamPhases, block?.startType || 'DEF');
+
+    if (allStreamPhases.length && narOpp.phases.length !== allStreamPhases.length) {
+      phaseMismatches.push({
+        minute: narOpp.minute, team: narOpp.team,
+        narrativePhaseCount: narOpp.phases.length, streamPhaseCount: allStreamPhases.length,
+      });
+    }
 
     const hasGoal = steps.some(s => s.outcome === 'GOAL');
     const hasShot = steps.some(s => s.stepType === 'SHOT' || s.stepType === 'FK_SHOT');
@@ -799,6 +1210,7 @@ function parseMatch(streamText, narrativeText) {
 
     opportunities.push({
       minute:          narOpp.minute,
+      sequence:        narOpp.sequence,
       team:            narOpp.team,
       teamSide:        narOpp.teamSide,
       startType:       block?.startType || null,
@@ -816,22 +1228,96 @@ function parseMatch(streamText, narrativeText) {
     });
   }
 
-  annotateScores(opportunities, scoreByMinute);
+  annotateScores(narOpps, opportunities);
   const playerRegistry = buildPlayerRegistry(opportunities, tacticalEvents);
 
-  // Surface stream-match confidence through the same warnings the UI already shows,
-  // rather than leaving it as a data field nobody looks at. One aggregate line per
-  // category instead of one per opportunity, so a match with many uncertain pairings
-  // doesn't bury the warnings banner.
-  const noneCount = opportunities.filter(o => o.streamMatchConfidence === 'none').length;
-  const uncertainCount = opportunities.filter(o => o.streamMatchConfidence === 'uncertain').length;
-  if (noneCount) warnings.push(`${noneCount} opportunit${noneCount === 1 ? 'y has' : 'ies have'} no matching telemetry — values for ${noneCount === 1 ? 'it' : 'them'} are narrative-only.`);
-  if (uncertainCount) warnings.push(`${uncertainCount} opportunit${uncertainCount === 1 ? 'y' : 'ies'} shared a minute+side with another and may be paired with the wrong telemetry block if an earlier one was malformed.`);
+  // INJURY's narrative line has no team prefix at all (see parseNarrative), so it never
+  // gets a teamSide from the loop above. Now that playerRegistry has aggregated team/side
+  // for every player observed anywhere else in the match (a step, a substitution...), an
+  // injured player's side is usually resolvable from their own name — a deterministic
+  // lookup, not a guess. Stays null (honestly) for a player never observed anywhere else.
+  for (const ev of tacticalEvents) {
+    if (ev.teamSide || !ev.player?.name) continue;
+    const reg = playerRegistry[ev.player.name];
+    if (reg?.side) { ev.teamSide = reg.side; ev.team = reg.team; }
+  }
 
-  return { meta: { homeTeam, awayTeam, finalScore }, playerRegistry, opportunities, tacticalEvents, warnings };
+  // B8/B9: dynamic tactical phases per side, then associate each opportunity with the
+  // phase (by id) in force for both its own team and the opponent at the moment it
+  // happened — keyed by narrative sequence, not minute, for the same reason Phase A keys
+  // scores that way.
+  const phaseSource = { tacticalEvents };
+  const tacticalPhases = {
+    home: buildTacticalPhases(phaseSource, 'home'),
+    away: buildTacticalPhases(phaseSource, 'away'),
+  };
+  for (const opp of opportunities) {
+    opp.tacticalContext = {
+      homePhaseId: phaseIdAt(tacticalPhases.home, opp.sequence),
+      awayPhaseId: phaseIdAt(tacticalPhases.away, opp.sequence),
+    };
+  }
+
+  const unusedTelemetryBlocks = streamBlocks
+    .filter(b => !consumedBlocks.has(b))
+    .map(b => ({ minute: b.minute, side: b.attackingSide }));
+
+  const uncertainCount = opportunities.filter(o => o.streamMatchConfidence === 'uncertain').length;
+
+  // B16: a tactical event whose team could never be resolved (the player it names was
+  // never observed anywhere else in the match either) means part of the tactical
+  // reconstruction for this match is incomplete — surfaced the same way as every other
+  // Phase A diagnostic rather than a separate warning system. This is a genuinely
+  // different kind of uncertainty than telemetry/narrative pairing (`confidence` above),
+  // so it gets its own field instead of being folded into that enum.
+  const unresolvedTacticalEvents = tacticalEvents
+    .filter(ev => ev.scope !== 'match' && !ev.teamSide)
+    .map(ev => ({ id: ev.id, type: ev.type, minute: ev.minute }));
+
+  // Structured diagnostics for the whole match, not just per-opportunity — a match can
+  // "look" fine opportunity-by-opportunity (every one paired with SOME block) while still
+  // having leftover telemetry blocks nothing claimed, which is just as much a sign
+  // something's misaligned. 'degraded' covers every way that can happen: an opportunity
+  // with no matching block, a leftover unmatched block, an ambiguous same-(minute,side)
+  // pairing, or a phase count that doesn't agree with the block it WAS paired to.
+  const validation = {
+    narrativeOpportunityCount: narOpps.length,
+    telemetryOpportunityCount: streamBlocks.length,
+    matchedBlocks,
+    unmatchedNarrativeBlocks,
+    unusedTelemetryBlocks,
+    phaseMismatches,
+    unknownTelemetryLines,
+    unknownNarrativeLines,
+    unresolvedTacticalEvents,
+    confidence: (unmatchedNarrativeBlocks.length || unusedTelemetryBlocks.length ||
+                 phaseMismatches.length || uncertainCount) ? 'degraded' : 'exact',
+  };
+
+  // Human-readable warnings, derived from the structured diagnostics above rather than
+  // computed a second time — one aggregate line per category so a match with many issues
+  // doesn't bury the warnings banner in one-line-per-instance noise.
+  if (unmatchedNarrativeBlocks.length)
+    warnings.push(`${unmatchedNarrativeBlocks.length} opportunit${unmatchedNarrativeBlocks.length === 1 ? 'y has' : 'ies have'} no matching telemetry — values for ${unmatchedNarrativeBlocks.length === 1 ? 'it are' : 'them are'} narrative-only.`);
+  if (uncertainCount)
+    warnings.push(`${uncertainCount} opportunit${uncertainCount === 1 ? 'y' : 'ies'} shared a minute+side with another and may be paired with the wrong telemetry block if an earlier one was malformed.`);
+  if (unusedTelemetryBlocks.length)
+    warnings.push(`${unusedTelemetryBlocks.length} telemetry block${unusedTelemetryBlocks.length === 1 ? '' : 's'} never matched a narrative opportunity.`);
+  for (const pm of phaseMismatches)
+    warnings.push(`PHASE_COUNT_MISMATCH: ${pm.narrativePhaseCount} narrative phase(s) vs ${pm.streamPhaseCount} stream phase(s) at minute ${pm.minute} (${pm.team}) — values may be misattributed.`);
+  if (unknownTelemetryLines.length)
+    warnings.push(`${unknownTelemetryLines.length} unrecognized telemetry line(s) — FinalWhistle's format may have changed.`);
+  if (unknownNarrativeLines.length)
+    warnings.push(`${unknownNarrativeLines.length} unrecognized narrative line(s) within an opportunity — FinalWhistle's wording may have changed.`);
+  if (unresolvedTacticalEvents.length)
+    warnings.push(`${unresolvedTacticalEvents.length} tactical event(s) could not be attributed to a side — the named player wasn't observed anywhere else in the match. Partial tactical state.`);
+
+  return { meta: { homeTeam, awayTeam, finalScore }, playerRegistry, opportunities,
+           tacticalEvents, tacticalPhases, warnings, validation };
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { parseMatch, parseStreamTokens, groupStreamBlocks,
-                     parseNarrative, qualityLabel, qv };
+                     parseNarrative, qualityLabel, qv,
+                     tacticalStateAt, buildTacticalPhases, phaseIdAt, deriveFormation };
 }

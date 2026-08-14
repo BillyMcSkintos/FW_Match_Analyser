@@ -38,7 +38,13 @@ async function scrapeActiveTab() {
   // every tab and filtering by URL substring, and pick the most-recently-accessed one
   // with a single pass instead of sorting the whole result just to take the max.
   const tabs = await chrome.tabs.query({ url: 'https://*.finalwhistle.org/*' });
-  const fwTab = mostRecentlyAccessed(tabs);
+
+  // Prefer a tab actually on a match report (/match/ in the URL) over some other
+  // FinalWhistle page (league table, team page, etc.) that happens to be more
+  // recently accessed — a scrape only makes sense against a match report, so
+  // being "the newest FinalWhistle tab" isn't enough on its own.
+  const matchTabs = tabs.filter(t => t.url?.includes('/match/'));
+  const fwTab = mostRecentlyAccessed(matchTabs.length ? matchTabs : tabs);
 
   if (!fwTab) {
     // Fall back to active tab

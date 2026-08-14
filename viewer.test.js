@@ -293,3 +293,64 @@ test('malicious player/team names are escaped, not injected as HTML', () => {
   assert.ok(!out.includes('<img'), 'an unescaped tag must not reach the output');
   assert.ok(out.includes('&lt;img'), 'it should appear escaped instead');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tactical Phases (Phase B) — Squad tab rendering
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('renderTacticalPhasesSection shows one card per material change, with only known fields', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 62',
+    'Home Team - Issued order- Change mentality to ATTACKING',
+  ].join('\n');
+  const match = ctx.parseMatch('', narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderTacticalPhasesSection(match, 'home', '#4da3ff');
+
+  assert.ok(html.includes('Tactical Phases (2)'), 'kickoff phase + the mentality change');
+  // escapeHtml renders the apostrophe as &#39; — assert on the digits/dash, not the raw quote.
+  assert.ok(html.includes('0–62'), 'first phase period label');
+  assert.ok(html.includes('ATTACKING'), 'the changed setting is shown');
+  // Middle order was never observed for this team — must render as the unknown marker,
+  // never a guessed value. Labeled "Middle order", not "Style" — see parser.js's
+  // initialTeamState comment on why teamState.style is never populated.
+  assert.ok(html.includes('Middle order: —'));
+  assert.ok(html.includes('Initial state'), 'the first (kickoff) phase has no triggering event');
+
+  // Away team never had a single tactical event — section renders nothing for the away
+  // side, since there are no phases beyond a trivial single kickoff-only phase... but
+  // buildTacticalPhases always returns at least the kickoff phase, so it should still show.
+  const awayHtml = ctx.renderTacticalPhasesSection(match, 'away', '#ff6b6b');
+  assert.ok(awayHtml.includes('Tactical Phases (1)'), 'away still gets its own kickoff phase even with zero events');
+});
+
+test('renderTacticalPhasesSection escapes malicious player/team text from a substitution', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 60',
+    'Home Team - Issued order- <script>evil()</script> [FW] was substituted with Player B [CM]',
+  ].join('\n');
+  const match = ctx.parseMatch('', narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderTacticalPhasesSection(match, 'home', '#4da3ff');
+  assert.ok(!html.includes('<script>evil()'), 'the raw tag must not survive into the rendered phase card');
+});
+
+test('renderSquadTab still renders the existing sections alongside the new Tactical Phases section', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 10',
+    'Opportunity for Home Team.',
+    'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Minute 60',
+    'Home Team - Issued order- Player A [RB] was moved to LB',
+  ].join('\n');
+  const match = ctx.parseMatch('', narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const html = ctx.renderSquadTab(match);
+  assert.ok(html.includes('Tactical Phases'));
+  assert.ok(html.includes('Position Changes'));
+  assert.ok(html.includes('Substitutions'));
+});
