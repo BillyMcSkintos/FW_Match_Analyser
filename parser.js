@@ -388,12 +388,11 @@ function parseNarrative(narrativeText) {
 
     // GK caught — a controlled save. This genuinely ends the attacking sequence: the
     // opportunity's next line is always the score bracket / next minute, never a
-    // continuation, confirmed against real match data.
+    // continuation.
     if (/managed to get hold of the ball/.test(line)) { currentPhase.outcome = 'SAVED'; continue; }
 
     // GK fumble/parry — NOT the same as a controlled save: the shot was kept out but the
-    // ball stayed live (confirmed wording from real match data: "bounced the ball back.",
-    // "could not handle the ball."). Distinct outcome rather than folding into SAVED so a
+    // ball stayed live. Distinct outcome rather than folding into SAVED so a
     // genuinely controlled save can still cleanly end the opportunity while a fumble does
     // not silently masquerade as one. Whatever follows in the narrative resolves it: an
     // immediate "GOAL!"/corner still overrides unconditionally (as already happens today),

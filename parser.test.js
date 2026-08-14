@@ -344,12 +344,11 @@ test('phase-count mismatch between narrative and stream is surfaced as a warning
 // ─────────────────────────────────────────────────────────────────────────────
 // GK save/rebound handling
 //
-// Wording below ("bounced the ball back.", "could not handle the ball.", "directed
-// ball to corner.") is copied verbatim from real FinalWhistle match reports gathered
-// for this change, not invented. The one gap: no real example of a rebound recovered
-// by the SAME attacking team producing a literal second recorded shot turned up across
-// 8 real matches sampled (~2500 narrative lines) — that specific continuation is not
-// tested here because there's nothing to confirm it against; see the summary notes.
+// These cases exercise the exact phrase parser.js's own regexes key off of for a
+// fumble/parry vs. a controlled save. One gap: a rebound recovered by the SAME
+// attacking team producing a literal second recorded shot isn't covered here —
+// that continuation hasn't been confirmed against the game's actual output, so
+// there's nothing solid to assert against; see the summary notes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('GK fumble (not held) reports FUMBLED on the shot, not the recovery aftermath', () => {
@@ -494,7 +493,7 @@ test('GK fumble recovered and cleared behind for a corner keeps the corner', () 
 });
 
 test('GK gains control and the save itself launches a counter-attack', () => {
-  // Real wording/structure: the GK becomes the passer of the new (isCA) phase.
+  // The GK becomes the passer of the new (isCA) phase.
   const narrative = [
     'Minute 26',
     'Opportunity for Away Team.',
@@ -700,7 +699,7 @@ test('blocked pass recovered by the defending team: possession changes, opportun
 // Penalties — fouler vs. taker distinction
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('penalty scored: PB foul -> penalty -> goal (real wording, fouled player takes it)', () => {
+test('penalty scored: PB foul -> penalty -> goal (fouled player takes it)', () => {
   const narrative = [
     'Minute 61',
     'Opportunity for Home Team.',
@@ -782,10 +781,10 @@ test('penalty missed: PB foul -> penalty -> saved', () => {
 });
 
 test('penalty taker distinct from the player who was fouled is preserved, not lost', () => {
-  // No real example of a designated taker differing from the fouled player turned up in
-  // sampling, but FinalWhistle's own penalty-taker priority settings mean it's a real
-  // mechanic — this locks in that the code path (shot line names the actual taker) keeps
-  // that identity rather than silently defaulting to whoever won the box duel.
+  // A designated taker differing from the fouled player hasn't been directly observed,
+  // but FinalWhistle's own penalty-taker priority settings mean it's a real mechanic —
+  // this locks in that the code path (shot line names the actual taker) keeps that
+  // identity rather than silently defaulting to whoever won the box duel.
   const narrative = [
     'Minute 70',
     'Opportunity for Home Team.',
