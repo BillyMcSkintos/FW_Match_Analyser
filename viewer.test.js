@@ -84,3 +84,79 @@ test('an uninjured, untired player reports both as null', () => {
   assert.equal(result.injury, null);
   assert.equal(result.tiredness, null);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Counter-attack statistical attribution — a home-owned opportunity where Away
+// counters and scores. opp.teamSide stays 'home' for the whole opportunity (that's
+// correct — it's still "the opportunity Home started"), but every viewer stat that
+// counts actions within it must attribute the post-CA pass/shot to Away, not Home.
+// Same fixture shape as parser.test.js's "counter-attack: scoring side flips" test.
+// ─────────────────────────────────────────────────────────────────────────────
+const CA_NARRATIVE = [
+  'Minute 70',
+  'Opportunity for Home Team.',
+  'Midfield',
+  'Player A [RWB] attempted low good pass to Player B [RW]',
+  'Player C [LB] got poor assistance, and was close.',
+  'Player B [RW] made excellent reception and took control of the ball.',
+  'Counter attack',
+  'Midfield',
+  'Player X [FW] attempted low good pass to Player Y [LW]',
+  'Player D [CM] got weak assistance, and was close.',
+  'Player Y [LW] made excellent reception and took control of the ball.',
+  'Penalty Box',
+  'Player Y [LW] attempted low decent pass to Player X [FW]',
+  'Player E [CB] got good assistance, and was in decent position.',
+  'Player X [FW] made good reception, Player E [CB] made weak tackle.',
+  'Player X [FW] took control of the ball.',
+  'Goal Attempt',
+  'Player X [FW] made superb shot.',
+  'Player Z [GK] was fooled.',
+  'GOAL!',
+].join('\n');
+const CA_TELEMETRY = [
+  "70' - H - O_MID_START",
+  "70' - H - V_PASS - (60)",
+  "70' - A - V_ASSISTANCE - (30)",
+  "70' - H - V_RECEPTION - (70)",
+  "70' - A - E_COUNTER_ATTACK",
+  "70' - A - V_PASS - (55)",
+  "70' - H - V_ASSISTANCE - (35)",
+  "70' - A - V_RECEPTION - (65)",
+  "70' - A - V_PASS - (50)",
+  "70' - H - V_ASSISTANCE - (40)",
+  "70' - A - V_RECEPTION - (60)",
+  "70' - H - V_TACKLING - (35)",
+  "70' - A - V_SHOT - (75)",
+  "70' - H - V_REFLEX - (25)",
+  "70' - A - E_GOAL",
+].join('\n');
+
+test('counter-attacking shot is credited to the countering team in buildTypeCounts', () => {
+  const ctx = loadViewerContext();
+  const match = ctx.parseMatch(CA_TELEMETRY, CA_NARRATIVE);
+  assert.equal(match.opportunities[0].teamSide, 'home');
+  const counts = ctx.buildTypeCounts(match.opportunities, ['SHOT', 'FK_SHOT'], ctx.classifyShotType);
+  assert.equal(counts.away.normal, 1, 'the shot belongs to away, which countered and scored');
+  assert.equal(counts.home.normal ?? 0, 0, 'home never took a shot in this opportunity');
+});
+
+test('counter-attacking pass into the box is credited to the countering team in buildFWDelivery', () => {
+  const ctx = loadViewerContext();
+  const match = ctx.parseMatch(CA_TELEMETRY, CA_NARRATIVE);
+  const { laneCounts } = ctx.buildFWDelivery(match.opportunities);
+  const awayTotal = Object.values(laneCounts.away).reduce((a, b) => a + b, 0);
+  const homeTotal = Object.values(laneCounts.home).reduce((a, b) => a + b, 0);
+  assert.equal(awayTotal, 1, 'the PB pass to the FW belongs to away, not the opportunity\'s nominal home owner');
+  assert.equal(homeTotal, 0);
+});
+
+test('counter-attacking goal is credited to the countering team in computePhaseStats', () => {
+  const ctx = loadViewerContext();
+  const match = ctx.parseMatch(CA_TELEMETRY, CA_NARRATIVE);
+  const stats = ctx.computePhaseStats(match);
+  const window7090 = stats.find(s => s.label === "70–90'");
+  assert.equal(window7090.home.opps, 1, 'the opportunity itself is still home\'s — it started the sequence');
+  assert.equal(window7090.away.goals, 1, 'the goal belongs to away, who actually scored it');
+  assert.equal(window7090.home.goals, 0, 'home must not be credited with a goal it didn\'t score');
+});

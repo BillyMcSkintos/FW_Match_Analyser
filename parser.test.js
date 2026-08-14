@@ -131,6 +131,15 @@ test('counter-attack: scoring side flips from the opportunity\'s starting side',
   // The scorer belongs to the team that countered, not the team the opportunity
   // is nominally "for" — this is the exact bug fixed for the scorers header.
   assert.equal(goalStep.shooter.side, 'away');
+  // Every step carries its own attackingSide/defendingSide (set by assignSides,
+  // read by phaseToSteps's mk()) so viewer code never has to fall back to
+  // opp.teamSide — which would be wrong for every step after the CA boundary.
+  // The pre-CA duel still belongs to home; the post-CA goal step flips to away.
+  const preCADuel = opp.steps.find(s => s.stepType === 'MID_DUEL' && !s.isCA);
+  assert.equal(preCADuel.attackingSide, 'home');
+  assert.equal(preCADuel.defendingSide, 'away');
+  assert.equal(goalStep.attackingSide, 'away');
+  assert.equal(goalStep.defendingSide, 'home');
 });
 
 test('long ball: PB_PASS with no preceding midfield phase, from a back position', () => {

@@ -510,6 +510,8 @@ function phaseToSteps(phase, streamValues, streamEvents) {
 
   const mk = (stepType, extra) => ({
     stepType, isCA: phase.isCA || false,
+    attackingTeam: phase.attackingTeam, attackingSide: phase.attackingSide,
+    defendingTeam: phase.defendingTeam, defendingSide: phase.defendingSide,
     yellowCard: null, fouler: null, blockRecovery: null,
     ...extra,
   });
@@ -627,6 +629,12 @@ function assignSides(phases, attackTeam, attackSide, defendTeam, defendSide) {
     stamp(p.passer,  at, as); stamp(p.target,  at, as); stamp(p.shotTaker, at, as);
     stamp(p.defender, dt, ds); stamp(p.blockRecovery, dt, ds);
     if (p.gkPlayer) { p.gkPlayer.team = dt; p.gkPlayer.side = ds; }
+    // Carried onto every step built from this phase (see phaseToSteps's mk()) so the
+    // viewer can attribute a pass/duel/shot to whichever team actually performed it —
+    // opp.teamSide alone is wrong once a counter-attack has flipped who's attacking,
+    // since it always names the team the opportunity nominally started for.
+    p.attackingTeam = at; p.attackingSide = as;
+    p.defendingTeam = dt; p.defendingSide = ds;
   }
 }
 

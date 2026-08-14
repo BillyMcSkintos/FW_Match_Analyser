@@ -1154,7 +1154,11 @@ function buildTypeCounts(opportunities, stepTypes, classify) {
       if (!stepTypes.includes(s.stepType)) return;
       const key = classify(s);
       if (!key) return;
-      counts[opp.teamSide][key] = (counts[opp.teamSide][key] || 0) + 1;
+      // The step's own attackingSide, not opp.teamSide — a counter-attack flips who's
+      // actually attacking partway through the opportunity, so the opportunity's nominal
+      // starting side is wrong for any step after that boundary.
+      const side = s.attackingSide || opp.teamSide;
+      counts[side][key] = (counts[side][key] || 0) + 1;
     });
   });
   return counts;
@@ -1171,11 +1175,23 @@ function renderTypeDistribution(title, counts) {
   return html;
 }
 function renderLongBallSummary(opportunities) {
+  // isLongBall describes the opportunity's own structural start (a back/wing-back
+  // delivering straight into the box), which is unambiguous and always belongs to
+  // opp.teamSide — a counter-attack can't happen on the very first step, so this part
+  // isn't affected by the attribution bug the shot/goal counts below are guarding against.
   const home = opportunities.filter(o => o.teamSide === 'home' && o.isLongBall);
   const away = opportunities.filter(o => o.teamSide === 'away' && o.isLongBall);
   if (!home.length && !away.length) return '';
-  const shots = arr => arr.filter(o => o.hasShot).length;
-  const goals = arr => arr.filter(o => o.hasGoal).length;
+  // A shot/goal only counts toward "→ shot"/"→ goal" if it belongs to the SAME side
+  // that played the long ball. If the sequence turned into a counter-attack and the
+  // opponent shot or scored instead, that's a long ball that was lost, not one that
+  // produced a shot — opp.hasShot/opp.hasGoal alone can't tell the difference.
+  const hasOwnShot = o => o.steps.some(s =>
+    (s.stepType === 'SHOT' || s.stepType === 'FK_SHOT') && (s.attackingSide || o.teamSide) === o.teamSide);
+  const hasOwnGoal = o => o.steps.some(s =>
+    s.outcome === 'GOAL' && (s.attackingSide || o.teamSide) === o.teamSide);
+  const shots = arr => arr.filter(hasOwnShot).length;
+  const goals = arr => arr.filter(hasOwnGoal).length;
   let html = `<div class="dist-title">Long Balls</div>`;
   html += statBarRow('attempted', home.length, away.length, home.length, away.length);
   html += statBarRow('→ shot', shots(home), shots(away), shots(home), shots(away));
@@ -1197,7 +1213,9 @@ function buildFWDelivery(opportunities) {
   opportunities.forEach(opp => {
     opp.steps.forEach(s => {
       if (!PASS_STEP_TYPES_FOR_STATS.includes(s.stepType) || s.to?.position !== 'FW') return;
-      const side = opp.teamSide;
+      // Same fix as buildTypeCounts — attribute by the pass step's own side, which can
+      // differ from opp.teamSide once a counter-attack has flipped the attacking team.
+      const side = s.attackingSide || opp.teamSide;
       const fromLane = lane(s.from?.position);
       laneCounts[side][fromLane] = (laneCounts[side][fromLane] || 0) + 1;
       const h = s.passHeight === 'high' ? 'high' : 'low';
@@ -1239,19 +1257,29 @@ function renderFWDelivery(opportunities) {
 // "does chain quality predict goals" is asking, instead of one ambiguous number.
 const OFFENSE_KEYS = ['pass', 'reception', 'shot'];
 const DEFENSE_KEYS = ['assistance', 'tackle', 'gkSave'];
-function sumStepValues(opp, keys) {
+function sumStepValues(steps, keys) {
   let total = 0;
-  opp.steps.forEach(s => {
+  steps.forEach(s => {
     const v = s.values || {};
     keys.forEach(k => { if (v[k]?.value != null) total += v[k].value; });
   });
   return total;
 }
 function renderQualityScatter(opportunities) {
-  const pts = opportunities.map(o => ({
-    off: sumStepValues(o, OFFENSE_KEYS), def: sumStepValues(o, DEFENSE_KEYS),
-    goal: o.hasGoal, shot: o.hasShot, side: o.teamSide,
-  }));
+  const pts = opportunities.map(o => {
+    // Color/attribute the dot by whoever's step ended the sequence (the shot, or the
+    // last duel if it never reached one) rather than opp.teamSide, and sum offense/
+    // defense only from steps on that same side — after a counter-attack, the steps
+    // before the CA boundary belong to the OTHER team, and summing both sides' values
+    // into one dot would mix two different teams' execution into a single number.
+    const finalStep = o.steps[o.steps.length - 1];
+    const side = finalStep?.attackingSide || o.teamSide;
+    const sideSteps = o.steps.filter(s => (s.attackingSide || o.teamSide) === side);
+    return {
+      off: sumStepValues(sideSteps, OFFENSE_KEYS), def: sumStepValues(sideSteps, DEFENSE_KEYS),
+      goal: o.hasGoal, shot: o.hasShot, side,
+    };
+  });
   if (pts.length < 6) return '';
 
   const W = 320, H = 220, PL = 20, PR = 14, PT = 10, PB = 24;
@@ -1371,11 +1399,24 @@ function computePhaseStats(match) {
     away: { opps: 0, shots: 0, goals: 0 },
   }));
   (match?.opportunities || []).forEach(opp => {
-    const bucket = stats[phaseIndexOf(opp.minute)]?.[opp.teamSide];
-    if (!bucket) return;
-    bucket.opps++;
-    if (opp.hasShot) bucket.shots++;
-    if (opp.hasGoal) bucket.goals++;
+    const phase = stats[phaseIndexOf(opp.minute)];
+    if (!phase) return;
+    // The opportunity itself belongs to whichever team created it — that's a legitimate
+    // "who generated this attacking chance" count regardless of how the sequence later
+    // resolved, so opp.teamSide is correct here.
+    phase[opp.teamSide].opps++;
+    // A shot/goal, though, belongs to whoever actually took it — attribute per SHOT/
+    // FK_SHOT step's own attackingSide rather than blindly crediting opp.teamSide, which
+    // is wrong for any step recorded after a counter-attack boundary. This also means a
+    // second shot within the same opportunity (a rebound) is counted correctly instead of
+    // collapsing into one opp.hasShot/opp.hasGoal boolean.
+    opp.steps.forEach(s => {
+      if (s.stepType !== 'SHOT' && s.stepType !== 'FK_SHOT') return;
+      const bucket = phase[s.attackingSide || opp.teamSide];
+      if (!bucket) return;
+      bucket.shots++;
+      if (s.outcome === 'GOAL') bucket.goals++;
+    });
   });
   return stats;
 }
