@@ -18,6 +18,8 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   tactical events, recoveries, and arbitrarily repeated shots after goalkeeper rebounds.
 - Progressive schematic pitch highlighting, significant-moment vignettes, timeline
   seeking, and reduced-motion support without external assets or network requests.
+- Readable normal-speed timing and a dedicated directional arrow for each parsed action
+  before playback advances to the next step.
 
 ## [0.5.0] — Firefox compatibility
 

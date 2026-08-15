@@ -2753,19 +2753,47 @@ function playbackCueDescription(cue) {
   return '';
 }
 
-function playbackVignetteHtml(cue) {
-  const significant = cue && (cue.kind.startsWith('shot.') || cue.kind === 'incident.card' || cue.kind === 'match.break');
-  if (!significant) return '';
-  const icon = cue.kind === 'incident.card' ? '▮' : cue.kind === 'match.break' ? 'Ⅱ' : cue.kind === 'shot.resolve' && cue.variant === 'goal' ? '⚽' : '●';
-  return `<div class="playback-vignette-card"><div class="playback-vignette-icon">${icon}</div>` +
-    `<div class="playback-vignette-title">${escapeHtml(playbackCueTitle(cue))}</div>` +
-    `<div class="playback-vignette-detail">${escapeHtml(playbackCueDescription(cue))}</div></div>`;
-}
-
 function playbackCueOverlay(cue) {
   if (!cue?.actor?.position || !cue.attackingSide) return '';
   const point = pXY(cue.actor.position, cue.attackingSide);
   return `<circle class="pb-svg-pulse" cx="${point.x}" cy="${point.y}" r="15"/>`;
+}
+
+// Draw the current parsed action as its own bright route before the scheduler advances.
+// Completed actions remain in the quieter cumulative chain underneath, so playback reads
+// as a sequence instead of replacing the entire pitch at every cue. All endpoints are
+// the same role-based schematic anchors used by the existing pitch.
+function playbackStepArrow(cue) {
+  if (!cue?.actor?.position || !cue.attackingSide) return '';
+  const side = cue.attackingSide;
+  const col = side === 'home' ? HC : AC;
+  const from = pXY(cue.actor.position, side);
+  let to = null;
+
+  if (cue.kind === 'flow.pass' && cue.target?.position) {
+    to = pXY(cue.target.position, side);
+  } else if (['flow.duel', 'flow.dribble'].includes(cue.kind) && cue.opponent?.position) {
+    const opponent = pXY(cue.opponent.position, cue.defendingSide || (side === 'home' ? 'away' : 'home'));
+    // A duel is one local action, not a pass across the whole formation. Stop at the
+    // midpoint between the two schematic role anchors to show the direction of pressure.
+    to = { x: (from.x + opponent.x) / 2, y: (from.y + opponent.y) / 2 };
+  } else if (cue.kind === 'shot.strike') {
+    to = { x: MX, y: side === 'home' ? PY.goal : AY.goal };
+  } else if (cue.kind === 'flow.recovery') {
+    const attackDirection = side === 'home' ? -1 : 1;
+    to = from;
+    const recoveryFromY = from.y - 34 * attackDirection;
+    return `<g class="pb-step-route"><line class="pb-step-arrow" pathLength="1" ` +
+      `x1="${from.x}" y1="${recoveryFromY}" x2="${to.x}" y2="${to.y}" ` +
+      `stroke="${col}" stroke-width="4" stroke-linecap="round"/>` +
+      arrowHead(from.x, recoveryFromY, to.x, to.y, col, 1, 1) + `</g>`;
+  }
+
+  if (!to || (Math.abs(to.x - from.x) < 1 && Math.abs(to.y - from.y) < 1)) return '';
+  return `<g class="pb-step-route"><line class="pb-step-arrow" pathLength="1" ` +
+    `x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" ` +
+    `stroke="${col}" stroke-width="4" stroke-linecap="round"/>` +
+    arrowHead(from.x, from.y, to.x, to.y, col, 1, 2) + `</g>`;
 }
 
 function isPlaybackTabActive() {
@@ -2823,7 +2851,7 @@ function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
   if (!paintPitch || !cue) return;
   const partial = playbackPartialOpportunity(_match, cue);
   const chain = partial?.steps?.length ? renderHighlightChain(partial) : '';
-  setHighlight(chain + playbackCueOverlay(cue), !!(chain || cue.actor));
+  setHighlight(chain + playbackStepArrow(cue) + playbackCueOverlay(cue), !!(chain || cue.actor));
   $('pass-summary').style.display = 'none';
   $('raw-panel').style.display = 'none';
   markTimelineSelected(cue.opportunityIndex);

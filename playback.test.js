@@ -101,3 +101,10 @@ test('cue model does not invent coordinates, save direction, cross or red-card f
     }
   }
 });
+
+test('normal-speed cues remain visible long enough to read each action', () => {
+  const cues = buildPlaybackCues(fixture('open-play'), { opportunityIndex: 0 });
+  const actions = cues.filter(c => ['flow.pass', 'flow.duel', 'shot.strike', 'shot.resolve'].includes(c.kind));
+  assert.equal(actions.every(c => c.durationMs >= 2800), true);
+  assert.equal(cues.find(c => c.kind === 'shot.resolve' && c.variant === 'goal').durationMs, 4000);
+});

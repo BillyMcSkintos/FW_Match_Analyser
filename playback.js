@@ -9,19 +9,19 @@
  */
 
 const PB_CUE_DURATIONS = Object.freeze({
-  opportunityStart: 350,
-  pass: 600,
-  duel: 520,
-  dribble: 560,
-  shotStrike: 760,
-  longShotStrike: 900,
-  shotResolve: 900,
-  goal: 1100,
-  recovery: 500,
-  discipline: 650,
-  tactical: 750,
-  break: 1000,
-  opportunityEnd: 650,
+  opportunityStart: 1800,
+  pass: 3000,
+  duel: 2800,
+  dribble: 3000,
+  shotStrike: 3200,
+  longShotStrike: 3600,
+  shotResolve: 3200,
+  goal: 4000,
+  recovery: 2800,
+  discipline: 3000,
+  tactical: 3200,
+  break: 4000,
+  opportunityEnd: 1800,
 });
 
 const PB_PASS_STEPS = new Set(['START_PASS', 'PB_PASS', 'SP_PASS', 'FK_PASS']);

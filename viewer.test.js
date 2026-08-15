@@ -85,6 +85,22 @@ test('playback focuses the current rebound shot instead of the first shot', () =
   assert.equal(ctx.stepsToChain(partial).gkRes, 'save');
 });
 
+test('playback draws each directional action as its own arrow', () => {
+  const ctx = loadViewerContext();
+  const pass = ctx.playbackStepArrow({
+    kind: 'flow.pass', attackingSide: 'home', defendingSide: 'away',
+    actor: { position: 'RB' }, target: { position: 'CM' },
+  });
+  const shot = ctx.playbackStepArrow({
+    kind: 'shot.strike', attackingSide: 'away', defendingSide: 'home',
+    actor: { position: 'FW' },
+  });
+  assert.match(pass, /class="pb-step-arrow"/);
+  assert.match(pass, /pathLength="1"/);
+  assert.match(shot, /class="pb-step-arrow"/);
+  assert.notEqual(pass, shot);
+});
+
 test('diagnostic report includes the match URL and exact unknown lines with nearby context', () => {
   const ctx = loadViewerContext();
   const scrape = {

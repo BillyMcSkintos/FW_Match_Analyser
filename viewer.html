@@ -198,9 +198,13 @@ select:disabled{opacity:.4}
 .playback-vignette-title{font-size:14px;font-weight:700;color:#e4e9f5}
 .playback-vignette-detail{font-size:11px;color:#8a9ab0;margin-top:2px}
 .pb-svg-pulse{fill:none;stroke:#e8c468;stroke-width:3;transform-box:fill-box;transform-origin:center;animation:pb-pulse 1s ease-out infinite}
+.pb-step-route{animation:pb-route-in .18s ease-out}
+.pb-step-arrow{stroke-dasharray:1;stroke-dashoffset:1;animation:pb-draw-arrow .7s ease-out forwards}
 @keyframes pb-vignette-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pb-pulse{0%{opacity:.9;transform:scale(.55)}100%{opacity:0;transform:scale(1.8)}}
-@media (prefers-reduced-motion:reduce){.playback-vignette-card,.pb-svg-pulse,.tl-goal-glow{animation:none!important}.tl-marker .tl-dot,.opp-row{transition:none!important}}
+@keyframes pb-draw-arrow{to{stroke-dashoffset:0}}
+@keyframes pb-route-in{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.playback-vignette-card,.pb-svg-pulse,.pb-step-route,.pb-step-arrow,.tl-goal-glow{animation:none!important;stroke-dashoffset:0}.tl-marker .tl-dot,.opp-row{transition:none!important}}
 </style>
 </head>
 <body>
