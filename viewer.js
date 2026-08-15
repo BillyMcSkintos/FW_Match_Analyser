@@ -797,6 +797,14 @@ const OUT_LBL = {
   FOUL:'foul', CLEARED:'cleared', POSSESSION:'won', WON:'won', FREE_KICK:'free kick',
   OFFSIDE:'offside',
 };
+function outcomeLabel(outcome, missType = null) {
+  if (outcome === 'MISSED') {
+    if (missType === 'narrow') return 'missed narrowly';
+    if (missType === 'wide') return 'missed wide';
+    return 'missed';
+  }
+  return OUT_LBL[outcome] || outcome || '';
+}
 
 function lv(label, qvObj) {
   // lv('Pass', {value:75, label:'superb'}) → "Pass: 75 superb", as a fixed-width slot so
@@ -875,7 +883,7 @@ function renderStepDetail(opp) {
     const cls = STEP_TYPE_CSS[s.stepType] || 'stype-mid';
     const lbl = s.isPenalty ? 'PENALTY' : (STEP_TYPE_LBL[s.stepType] || s.stepType);
     const oc  = OUT_CSS[s.outcome]  || 'ob-won';
-    const ol  = OUT_LBL[s.outcome]  || (s.outcome||'');
+    const ol  = outcomeLabel(s.outcome, s.missType);
     const caCls = s.isCA ? ' ca-step' : '';
 
     let players = '';
@@ -1114,7 +1122,7 @@ function renderMatchTimeline(match) {
   [...plain, ...goals].forEach(m => {
     const { opp, idx, x, y, col, r, setPiece } = m;
     const fill = opp.hasGoal ? GOLD : col;
-    const outLbl = (OUT_LBL[opp.finalOutcome] || opp.finalOutcome || '').toUpperCase();
+    const outLbl = outcomeLabel(opp.finalOutcome, opp.finalMissType).toUpperCase();
     const teamName = opp.teamSide === 'home' ? (match.meta?.homeTeam || 'Home') : (match.meta?.awayTeam || 'Away');
     const tip = `${opp.minute}' · ${teamName} · ${outLbl}`;
     // Goals get a pulsing halo plus a ⚽ glyph on the dot itself (the same convention
@@ -1171,7 +1179,7 @@ function renderOppList(match) {
 
     const outCol = OUT_COL[opp.finalOutcome] || '#8a9ab0';
     const isPenalty = opp.steps.some(s => s.isPenalty);
-    const outLbl = (OUT_LBL[opp.finalOutcome] || '') + (isPenalty ? ' (pen)' : '');
+    const outLbl = outcomeLabel(opp.finalOutcome, opp.finalMissType) + (isPenalty ? ' (pen)' : '');
 
     html += `<div class="opp-row ${isHome?'home':'away'}${isGoal?' goal-row':''}"
                  data-idx="${idx}">
@@ -1733,7 +1741,7 @@ function renderDefensiveBreakdownSection(match, side, col) {
       ? `${STEP_TYPE_LBL[fail.stepType] || fail.stepType} lost by ${lastName(fail.defender)}`
       : 'no preceding duel lost (set piece / direct shot)';
     const oc = OUT_COL[c.gkOutcome] || '#8a9ab0';
-    const ol = OUT_LBL[c.gkOutcome] || c.gkOutcome || '';
+    const ol = outcomeLabel(c.gkOutcome, c.missType);
     return `<div class="opp-row ${side}" data-idx="${idx}">
       <span class="opp-min" style="color:${col}">${c.minute}'</span>
       <span style="font-size:11px;flex:1;padding:0 6px">${escapeHtml(failTxt)}</span>
@@ -1880,7 +1888,7 @@ function buildDiagnosticReport(scrape = _lastRenderedScrape, match = _match) {
   return [
     '# FinalWhistle Match Analyser diagnostic',
     '',
-    'Please paste this report into a GitHub issue. It contains parser diagnostics and only the nearby narrative context for unrecognized lines, not the complete match narrative.',
+    'Please paste this report into a GitHub issue. It contains compact parser diagnostics plus only nearby or structural narrative context, not the complete match narrative.',
     '',
     '## Match',
     '',
@@ -2481,7 +2489,7 @@ function exportSummaryLines(scope, opp) {
     ['Minute', `${opp.minute ?? '?'}'`],
     ['Opportunity started by', opp.team || opp.teamSide || '?'],
     ['Score after', `${opp.scoreAfter?.home ?? 0}-${opp.scoreAfter?.away ?? 0}`],
-    ['Outcome', OUT_LBL[opp.finalOutcome] || opp.finalOutcome || 'Unknown'],
+    ['Outcome', outcomeLabel(opp.finalOutcome, opp.finalMissType) || 'Unknown'],
   ];
 }
 

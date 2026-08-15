@@ -1,0 +1,14 @@
+87' - H - O_MID_START
+87' - H - V_PASS - (85)
+87' - A - V_ASSISTANCE - (30)
+87' - H - V_RECEPTION - (90)
+87' - H - V_PASS - (85)
+87' - A - V_ASSISTANCE - (20)
+87' - H - V_RECEPTION - (65)
+87' - A - V_TACKLING - (30)
+87' - H - V_SHOT - (45)
+87' - A - V_REFLEX - (65)
+87' - A - E_FUMBLE
+87' - H - V_SHOT - (55)
+87' - A - V_REFLEX - (75)
+87' - A - E_FUMBLE

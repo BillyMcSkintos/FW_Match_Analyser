@@ -111,6 +111,42 @@ test('diagnostic report includes telemetry and matching diagnostics', () => {
   assert.match(report, /unresolvedTacticalEvents/);
 });
 
+test('phase-mismatch diagnostics include compact structural summaries without the full narrative', () => {
+  const ctx = loadViewerContext();
+  const unrelated = 'PRIVATE UNRELATED NARRATIVE THAT MUST NOT BE COPIED';
+  const report = ctx.buildDiagnosticReport(
+    {
+      url: 'https://example.finalwhistle.org/match/phase-mismatch', scrapedAt: 1,
+      narrative: ['Minute 1', unrelated, 'Minute 77', 'Opportunity for Home.'].join('\n'),
+      telemetry: "1' - H - PRIVATE_COMPLETE_STREAM_TOKEN",
+    },
+    { meta: {}, warnings: [], validation: {
+      unknownNarrativeLines: [], unknownTelemetryLines: [], unmatchedNarrativeBlocks: [],
+      unusedTelemetryBlocks: [], unresolvedTacticalEvents: [],
+      phaseMismatches: [{
+        minute: 77, team: 'Home', narrativePhaseCount: 1, streamPhaseCount: 2,
+        narrativePhases: [{ index: 0, phaseType: 'PB', shotTaker: 'Player B', outcome: 'FUMBLED' }],
+        streamPhases: [
+          { index: 0, valueKeys: ['pass', 'shot'], events: ['E_FUMBLE'] },
+          { index: 1, valueKeys: ['shot'], events: [] },
+        ],
+      }],
+    } },
+  );
+  assert.match(report, /"phaseType": "PB"/);
+  assert.match(report, /"shotTaker": "Player B"/);
+  assert.match(report, /"valueKeys": \[/);
+  assert.doesNotMatch(report, new RegExp(unrelated));
+  assert.doesNotMatch(report, /PRIVATE_COMPLETE_STREAM_TOKEN/);
+  assert.ok(report.length < 6000, `diagnostic should remain bounded, got ${report.length} characters`);
+});
+
+test('generated viewer wording normalizes the raw narrow miss grammar', () => {
+  const ctx = loadViewerContext();
+  assert.equal(ctx.outcomeLabel('MISSED', 'narrow'), 'missed narrowly');
+  assert.equal(ctx.outcomeLabel('MISSED', 'wide'), 'missed wide');
+});
+
 test('selected-opportunity narrative is viewport-bounded and vertically scrollable', () => {
   const html = fs.readFileSync(path.join(__dirname, 'viewer.html'), 'utf8');
   assert.match(html, /\.right-overlay\{[^}]*top:10px;[^}]*bottom:10px;/);

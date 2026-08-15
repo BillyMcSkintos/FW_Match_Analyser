@@ -1,0 +1,23 @@
+63' - H - O_DEF_START
+63' - H - V_PASS - (20)
+63' - A - E_BLOCK
+63' - H - V_PASS - (1)
+63' - A - E_BLOCK
+63' - H - V_PASS - (1)
+63' - A - V_ASSISTANCE - (90)
+63' - H - V_RECEPTION - (65)
+63' - A - V_TACKLING - (55)
+63' - A - E_COUNTER_ATTACK
+63' - A - V_PASS - (55)
+63' - H - V_ASSISTANCE - (45)
+63' - A - V_RECEPTION - (100)
+63' - H - V_TACKLING - (75)
+63' - A - V_PASS - (65)
+63' - H - V_ASSISTANCE - (55)
+63' - A - V_RECEPTION - (90)
+63' - H - V_TACKLING - (75)
+63' - A - V_SHOT - (85)
+63' - H - V_REFLEX - (85)
+63' - H - E_FUMBLE
+63' - A - V_SHOT - (75)
+63' - H - V_REFLEX - (65)

@@ -38,6 +38,13 @@ any of those three constructs; see CHANGELOG.md).
 
 No FinalWhistle manual text is reproduced in this directory.
 
+The three `rebound-second-shot-*` fixtures are a deliberate exception to the general
+anonymized-fixture provenance above: their narrative files preserve the observed match
+wording supplied with the parser report so the real player identities, accents, rebound
+sequence, and goalkeeper outcome cannot drift out of the regression. Their telemetry
+files are reconstructed from the reported phase structure and displayed quality tiers;
+they are reproduction streams for alignment testing, not claimed verbatim raw telemetry.
+
 ## Scenarios
 
 | Directory | Covers |
@@ -48,6 +55,9 @@ No FinalWhistle manual text is reproduced in this directory.
 | `delivered-free-kick/` | `FK_PASS`/`FK_DUEL` delivered free kick (has a pass line, unlike a direct shot) |
 | `direct-free-kick/` | `FK_SHOT` only — no pass line at all |
 | `save-fumble-rebound/` | A fumbled save followed by a second, separate shot in the same opportunity |
+| `rebound-second-shot-save/` | Observed counter-attack: first shot fumbled and recovered by the attack, second shot (lob) saved |
+| `rebound-second-shot-post/` | Observed open-play chain: first shot fumbled and recovered by the attack, second shot hits the post |
+| `rebound-second-shot-clearance/` | Observed open-play chain: two fumbled shots; the defender recovers and clears after the second, with no phantom third shot |
 | `same-minute-tactical-events/` | A position change, a substitution and a mentality change all issued in the same minute, immediately followed by an opportunity — narrative-sequence ordering, not minute-only ordering |
 | `substitutions-position-change/` | A position change and a substitution as independent tactical events, each producing its own phase boundary |
 | `tactical-phase-transition/` | One opportunity before a mentality change, one after — tests `phasePerformance`'s per-phase opportunity attribution |

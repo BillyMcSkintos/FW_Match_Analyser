@@ -44,6 +44,18 @@ function fixtureNames() {
     .filter(f => fs.statSync(path.join(FIXTURES_DIR, f)).isDirectory());
 }
 
+function parseFixture(name) {
+  const fixture = loadFixture(name);
+  const { narrative, telemetry, expected } = fixture;
+  return {
+    ...fixture,
+    match: parseMatch(telemetry, narrative, {
+      homeTeam: expected.homeTeam || 'Home Team',
+      awayTeam: expected.awayTeam || 'Away Team',
+    }),
+  };
+}
+
 // Independent of analytics.js on purpose (see file header) — computed directly off the
 // parser's own step model, the same way expected.json's values were originally derived.
 function countShots(match, side) {
@@ -61,8 +73,7 @@ function countGoals(match, side) {
 
 for (const name of fixtureNames()) {
   test(`fixture "${name}": expected.json invariants hold end-to-end`, () => {
-    const { narrative, telemetry, expected } = loadFixture(name);
-    const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+    const { expected, match } = parseFixture(name);
     const ca = A.counterAttackAnalysis(match);
 
     assert.equal(match.opportunities.length, expected.opportunities, 'opportunities');
@@ -102,8 +113,7 @@ test('contract: every opportunity\'s tacticalContext phase id exists in match.ta
   // (e.g. buildTacticalPhases and phaseIdAt disagreeing after an independent change to
   // either one).
   for (const name of fixtureNames()) {
-    const { narrative, telemetry } = loadFixture(name);
-    const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+    const { match } = parseFixture(name);
     const homeIds = new Set(match.tacticalPhases.home.map(p => p.id));
     const awayIds = new Set(match.tacticalPhases.away.map(p => p.id));
     for (const opp of match.opportunities) {
@@ -205,4 +215,73 @@ test('contract: same-minute tactical changes are all reflected in the following 
   assert.equal(phase.state.players['Player X'].position, 'LM');
   assert.equal(phase.state.players['Player Y'].onPitch, false);
   assert.equal(phase.state.players['Player Z'].onPitch, true);
+});
+
+test('observed rebound: counter-attack fumble then saved lob stays two aligned away shots', () => {
+  const { match } = parseFixture('rebound-second-shot-save');
+  const opp = match.opportunities[0];
+  const shots = opp.steps.filter(s => s.stepType === 'SHOT');
+  assert.equal(shots.length, 2);
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.gk.name, s.outcome, s.values.shot.value, s.values.gkSave.value]), [
+    ['Marin Burgă', 'Vlastimil Šindelář', 'FUMBLED', 85, 85],
+    ['Ceferino Hinojosa', 'Vlastimil Šindelář', 'SAVED', 75, 65],
+  ]);
+  assert.equal(shots[0].looseBallRecovery.name, 'Ceferino Hinojosa');
+  assert.equal(shots[0].looseBallRecovery.side, 'away');
+  assert.equal(shots[1].shotType, 'lob');
+  assert.deepEqual(shots.map(s => s.attackingSide), ['away', 'away']);
+  assert.equal(A.opportunityFunnel(match).entries[0].shotCount, 2);
+  assert.equal(A.counterAttackAnalysis(match).away.shots, 2);
+  assert.equal(A.counterAttackAnalysis(match).home.shotsConceded, 2);
+  assert.equal(A.phasePerformance(match, 'home')[0].opponentShots, 2);
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Vlastimil Šindelář'];
+  assert.equal(gk.shotsFaced, 2);
+  assert.equal(gk.fumbles, 1);
+  assert.equal(gk.saves, 1);
+  assert.equal(A.playerInvolvementChains(match).terminators['Ceferino Hinojosa'].side, 'away');
+  assert.equal(match.validation.confidence, 'exact');
+  assert.equal(match.warnings.length, 0);
+});
+
+test('observed rebound: fumble then post preserves both home shooters and telemetry values', () => {
+  const { match, narrative, telemetry, expected } = parseFixture('rebound-second-shot-post');
+  const opp = match.opportunities[0];
+  const shots = opp.steps.filter(s => s.stepType === 'SHOT');
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.outcome, s.values.shot.value, s.values.gkSave.value]), [
+    ['Colby Carson', 'FUMBLED', 30, 65],
+    ['Manuel Antonio Saslavsky', 'POST', 20, 55],
+  ]);
+  assert.equal(shots[0].looseBallRecovery.name, 'Manuel Antonio Saslavsky');
+  assert.match(opp.rawLines.join('\n'), /Colby Carson \[FW\] has a good angle\./,
+    'the existing positive-angle semantics preserve the source line without inventing a numeric angle');
+  assert.deepEqual(shots.map(s => s.attackingSide), ['home', 'home']);
+  assert.equal(A.opportunityFunnel(match).entries[0].shotCount, 2);
+  assert.equal(A.goalkeeperAnalysis(match).byGoalkeeper['Dan Kubelka'].shotsFaced, 2);
+  assert.equal(match.validation.phaseMismatches.length, 0);
+
+  const augmented = parseMatch(telemetry, [
+    'Minute 90', 'FC Lions Pouchov - Colby Carson [FW] looks tired.',
+    narrative, 'Minute 90', 'The referee blew the final whistle.',
+  ].join('\n'), { homeTeam: expected.homeTeam, awayTeam: expected.awayTeam });
+  assert.equal(augmented.tacticalEvents.filter(e => e.type === 'TIREDNESS').length, 1);
+  assert.equal(augmented.tacticalEvents.find(e => e.type === 'TIREDNESS').level, 'TIRED');
+  assert.equal(augmented.validation.unknownNarrativeLines.length, 0,
+    'the adjacent tiredness and final-whistle lines remain recognized admin text');
+});
+
+test('observed rebound: second fumble recovery and clearance remain aftermath, not a third shot', () => {
+  const { match } = parseFixture('rebound-second-shot-clearance');
+  const opp = match.opportunities[0];
+  const shots = opp.steps.filter(s => s.stepType === 'SHOT');
+  assert.equal(shots.length, 2);
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.outcome, s.looseBallRecovery.name]), [
+    ['Petrică Certejan', 'FUMBLED', 'Richárd Rejtő'],
+    ['Richárd Rejtő', 'FUMBLED', 'Eusebio Caruso'],
+  ]);
+  assert.equal(shots[1].looseBallRecovery.side, 'away');
+  assert.equal(shots[1].looseBallResolution, 'CLEARED');
+  assert.match(opp.rawLines.join('\n'), /Eusebio Caruso \[LB\] cleared the ball to safety\./);
+  assert.equal(A.opportunityFunnel(match).entries[0].shotCount, 2);
+  assert.equal(A.goalkeeperAnalysis(match).byGoalkeeper['Julio César Sáenz Peña'].fumbles, 2);
+  assert.equal(match.validation.confidence, 'exact');
 });

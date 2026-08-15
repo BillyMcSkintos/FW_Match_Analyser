@@ -353,6 +353,17 @@ test('phase-count mismatch between narrative and stream is surfaced as a warning
   assert.equal(match.validation.phaseMismatches.length, 1);
   assert.equal(match.validation.phaseMismatches[0].narrativePhaseCount, 1);
   assert.equal(match.validation.phaseMismatches[0].streamPhaseCount, 2);
+  assert.deepEqual(match.validation.phaseMismatches[0].narrativePhases, [{
+    index: 0, phaseType: 'MID', isCA: false, passer: 'Player A', target: 'Player B',
+    defender: 'Player C', shotTaker: null, goalkeeper: null, outcome: 'CLEARED',
+    looseBallRecovery: null, looseBallResolution: null,
+  }]);
+  assert.deepEqual(match.validation.phaseMismatches[0].streamPhases.map(p => ({
+    index: p.index, valueKeys: Array.from(p.valueKeys), events: Array.from(p.events),
+  })), [
+    { index: 0, valueKeys: ['assistance', 'pass', 'reception', 'tackle'], events: [] },
+    { index: 1, valueKeys: ['assistance', 'pass'], events: [] },
+  ]);
   assert.equal(match.validation.confidence, 'degraded');
 });
 
@@ -1872,4 +1883,120 @@ test('a preferred-side order is captured, updates teamState, and opens a new tac
 
   const phases = buildTacticalPhases(match, 'home');
   assert.equal(phases.length, 2, 'the order must open its own tactical phase boundary');
+});
+
+test('an arbitrary three-shot live-ball rebound chain creates three aligned shot phases', () => {
+  const narrative = [
+    'Minute 61', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [CM] attempted high good pass to Player B [FW]',
+    'Player D [CB] got weak assistance, and was in decent position.',
+    'Player B [FW] made superb reception, Player D [CB] made weak tackle.',
+    'Player B [FW] took control of the ball.', 'Goal Attempt',
+    'Player B [FW] made good shot.',
+    'Player G [GK] was in decent spot, and made good effort to prevent goal.',
+    'Player G [GK] bounced the ball back.', 'The ball is now free!',
+    'Player C [FW] was close and took control of the ball.', 'Goal Attempt',
+    'Player C [FW] made superb shot.',
+    'Player G [GK] was in decent spot, and made superb effort to prevent goal.',
+    'Player G [GK] could not handle the ball.', 'The ball is now free!',
+    'Player E [FW] was close and took control of the ball.', 'Goal Attempt',
+    'Player E [FW] made excellent shot.',
+    'Player G [GK] was in decent spot, and made brilliant effort to prevent goal.',
+    'Player G [GK] managed to get hold of the ball.', '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "61' - H - O_MID_START", "61' - H - V_PASS - (65)",
+    "61' - A - V_ASSISTANCE - (30)", "61' - H - V_RECEPTION - (75)",
+    "61' - A - V_TACKLING - (30)", "61' - H - V_SHOT - (65)",
+    "61' - A - V_REFLEX - (65)", "61' - A - E_FUMBLE",
+    "61' - H - V_SHOT - (75)", "61' - A - V_REFLEX - (75)",
+    "61' - A - E_FUMBLE", "61' - H - V_SHOT - (65)",
+    "61' - A - V_REFLEX - (85)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const shots = match.opportunities[0].steps.filter(s => s.stepType === 'SHOT');
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.outcome]), [
+    ['Player B', 'FUMBLED'], ['Player C', 'FUMBLED'], ['Player E', 'SAVED'],
+  ]);
+  assert.deepEqual(shots.slice(0, 2).map(s => s.looseBallRecovery.name), ['Player C', 'Player E']);
+  assert.equal(match.validation.phaseMismatches.length, 0);
+  assert.equal(match.validation.confidence, 'exact');
+});
+
+test('goalkeeper pressure wording is neutral metadata on a normal saved shot', () => {
+  const narrative = [
+    'Minute 30', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [CM] attempted high good pass to Player B [FW]',
+    'Player D [CB] got weak assistance, and was in decent position.',
+    'Player B [FW] made superb reception, Player D [CB] made weak tackle.',
+    'Player B [FW] took control of the ball.', 'Goal Attempt',
+    'Player B [FW] made good shot.',
+    'Player G [GK] is under a lot of pressure right now.',
+    'Player G [GK] was in decent spot, and made superb effort to prevent goal.',
+    'Player G [GK] managed to get hold of the ball.',
+  ].join('\n');
+  const telemetry = [
+    "30' - H - O_MID_START", "30' - H - V_PASS - (65)",
+    "30' - A - V_ASSISTANCE - (30)", "30' - H - V_RECEPTION - (75)",
+    "30' - A - V_TACKLING - (30)", "30' - H - V_SHOT - (65)",
+    "30' - A - V_REFLEX - (75)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const shot = match.opportunities[0].steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shot.outcome, 'SAVED');
+  assert.equal(shot.gk.name, 'Player G');
+  assert.deepEqual(Array.from(shot.gkContextLines), ['Player G [GK] is under a lot of pressure right now.']);
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  assert.equal(match.validation.phaseMismatches.length, 0);
+});
+
+test('goalkeeper pressure wording does not split or alter a long-shot goal', () => {
+  const narrative = [
+    'Minute 31', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [CM] attempted low good pass to Player B [OM]',
+    'Player D [DM] got weak assistance, and was out of position.',
+    'Player B [OM] made superb reception and took control of the ball.',
+    'Long Shot Goal Attempt', 'Player B [OM] made brilliant shot.',
+    'Player G [GK] is under a lot of pressure right now.', 'Player G [GK] was fooled.', 'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "31' - H - O_MID_START", "31' - H - V_PASS - (65)",
+    "31' - A - V_ASSISTANCE - (30)", "31' - H - V_RECEPTION - (75)",
+    "31' - H - V_SHOT - (85)", "31' - A - V_REFLEX - (20)", "31' - H - E_GOAL",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const shots = match.opportunities[0].steps.filter(s => s.stepType === 'SHOT');
+  assert.equal(shots.length, 1);
+  assert.equal(shots[0].outcome, 'GOAL');
+  assert.equal(shots[0].isLongShot, true);
+  assert.equal(shots[0].gk.name, 'Player G');
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+});
+
+test('the raw narrow-miss wording is recognized and semantically normalized', () => {
+  const narrative = [
+    'Minute 32', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [CM] attempted high good pass to Player B [FW]',
+    'Player D [CB] got weak assistance, and was in decent position.',
+    'Player B [FW] made superb reception, Player D [CB] made weak tackle.',
+    'Player B [FW] took control of the ball.', 'Goal Attempt',
+    'Player B [FW] made good shot.',
+    'Player G [GK] was fooled , and made superb effort to prevent goal.',
+    'Missed the goal narrow!', '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "32' - H - O_MID_START", "32' - H - V_PASS - (65)",
+    "32' - A - V_ASSISTANCE - (30)", "32' - H - V_RECEPTION - (75)",
+    "32' - A - V_TACKLING - (30)", "32' - H - V_SHOT - (65)",
+    "32' - A - V_REFLEX - (75)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const shot = match.opportunities[0].steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shot.outcome, 'MISSED');
+  assert.equal(shot.missType, 'narrow');
+  assert.equal(shot.shooter.name, 'Player B');
+  assert.equal(shot.gk.name, 'Player G');
+  assert.match(match.opportunities[0].rawLines.join('\n'), /Missed the goal narrow!/);
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  assert.equal(match.validation.phaseMismatches.length, 0);
 });

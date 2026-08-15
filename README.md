@@ -7,9 +7,11 @@ readable breakdown of what actually happened in a match.
 FinalWhistle reports each match two ways — a plain-English narrative and a
 separate telemetry stream of quality scores — and neither is easy to read on
 its own. This extension merges both into a single per-opportunity model (pass
-→ duel → shot, with counter-attacks, set pieces, and GK saves/rebounds handled
-explicitly) and renders it as a pitch diagram, a clickable timeline, and a few
-statistics views.
+→ duel → shot, with counter-attacks, set pieces, and repeated live-ball shots after
+GK rebounds handled explicitly) and renders it as a pitch diagram, a clickable
+timeline, and a few statistics views. Each rebound attempt remains a distinct shot,
+so its shooter, goalkeeper response, outcome, recovery, and telemetry values stay
+aligned instead of overwriting the preceding attempt.
 
 ## Features
 
@@ -35,7 +37,9 @@ statistics views.
   tier and team, with the same timeline linking into it.
 - **Issue-ready diagnostics** — parser warnings include a one-click **Copy diagnostics**
   action containing the match URL, extension version, validation details, exact unknown
-  lines, and a small surrounding narrative window for a focused GitHub issue.
+  lines, a small surrounding narrative window, and compact narrative/telemetry phase
+  summaries for alignment mismatches. Reports omit the complete match streams and
+  unrelated opportunities.
 - **JPG export** — save the current pitch view, a single pinned possession, or a
   whole-match overview as a local JPG. Built as a self-contained SVG from
   already-parsed match data (no page screenshot, no external image/font

@@ -13,7 +13,8 @@
  *   FK_PASS / FK_DUEL   – free kick restart pass + duel (same shape as PB), used when
  *                         the free kick is delivered rather than shot directly
  *   FK_SHOT            – direct free kick shot (no pass line at all)
- *   SHOT                – goal attempt, following a *_DUEL step or a direct MID long shot
+ *   SHOT                – goal attempt following a *_DUEL/direct MID long shot, or a
+ *                         standalone follow-up attempt after a live-ball GK rebound
  *   DRIB                – dribble attempt (between any two phases)
  *
  * Counter-attack: steps after CA boundary have isCA=true and sides flipped.
@@ -267,7 +268,8 @@ function parseNarrative(narrativeText) {
     flushPhase();
     currentPhase = { phaseType: type, passer: null, target: null, defender: null, gkPlayer: null,
       passType: 'normal', passHeight: null, outcome: null, fouler: null, shotTaker: null,
-      blockRecovery: null, yellowCard: null, shotType: null, shotAngle: null,
+      blockRecovery: null, blockRecoveryRole: null, looseBallResolution: null, yellowCard: null,
+      shotType: null, shotAngle: null, missType: null, gkContextLines: [],
       oneOnOne: false, isLongShot: false, isCA: inCA };
   };
 
@@ -355,7 +357,20 @@ function parseNarrative(narrativeText) {
     if (line === 'Penalty Box') { startPhase('PB');   continue; }
     if (line === 'Corner')      { startPhase('SP');   continue; }
     if (line === 'Free Kick')   { startPhase('FK');   continue; }
-    if (line === 'Goal Attempt') continue;
+    if (line === 'Goal Attempt' || line === 'Long Shot Goal Attempt') {
+      // The first goal-attempt marker belongs to the current MID/PB/SP/FK phase. Once
+      // that phase already contains a shot, FinalWhistle starts another stream phase
+      // for the next live-ball attempt. Split here so an arbitrary rebound chain maps
+      // one narrative shot phase to one telemetry shot phase instead of overwriting the
+      // preceding shooter/GK/outcome.
+      if (currentPhase?.shotTaker) {
+        if (currentPhase.outcome === 'FUMBLED' && currentPhase.blockRecovery)
+          currentPhase.blockRecoveryRole = 'attacker';
+        startPhase('SHOT');
+      }
+      if (currentPhase && line === 'Long Shot Goal Attempt') currentPhase.isLongShot = true;
+      continue;
+    }
 
     if (!currentPhase) continue;
 
@@ -439,7 +454,9 @@ function parseNarrative(narrativeText) {
     if (/cleared the ball to safety/.test(line)) {
       if ((m = line.match(/^(.+?) \[([A-Z]+)\] cleared/)))
         if (!currentPhase.defender) currentPhase.defender = player(m[1], m[2]);
-      if (!TERMINAL_OUTCOMES.has(currentPhase.outcome)) currentPhase.outcome = 'CLEARED';
+      if (currentPhase.outcome === 'FUMBLED' && currentPhase.blockRecovery)
+        currentPhase.looseBallResolution = 'CLEARED';
+      else if (!TERMINAL_OUTCOMES.has(currentPhase.outcome)) currentPhase.outcome = 'CLEARED';
       continue;
     }
 
@@ -499,9 +516,6 @@ function parseNarrative(narrativeText) {
     // it isn't flagged as unknown wording either way.
     if (/has a good angle/.test(line)) continue;
 
-    // Long shot marker
-    if (/Long Shot Goal Attempt/.test(line)) { currentPhase.isLongShot = true; continue; }
-
     // Shot line — also captures GK name for FK shots. Always records who actually took
     // the shot (shotTaker), separately from passer: for a normal PB/SP/FK-delivery
     // sequence the shooter is whoever received the pass (phase.target), which is who the
@@ -526,6 +540,14 @@ function parseNarrative(narrativeText) {
     // explicitly recognized rather than falling through as unknown.
     if (/^(.+?) \[([A-Z]+)\] was fooled\.$/.test(line)) continue;
 
+    // Observed goalkeeper context. Preserve the source wording as neutral metadata;
+    // it is not a numeric pressure value and changes neither phase shape nor outcome.
+    if ((m = line.match(/^(.+?) \[(GK)\] is under a lot of pressure right now\.$/))) {
+      if (!currentPhase.gkPlayer) currentPhase.gkPlayer = player(m[1], m[2]);
+      currentPhase.gkContextLines.push(line);
+      continue;
+    }
+
     // GK save line
     if ((m = line.match(/^(.+?) \[([A-Z]+)\] was .+?, and made \w+ effort to prevent goal\.$/))) {
       currentPhase.gkPlayer = player(m[1], m[2]);
@@ -549,8 +571,13 @@ function parseNarrative(narrativeText) {
     // Woodwork — both post and crossbar use the existing POST outcome/category.
     if (/bounced off the (?:post|bar)/i.test(line)) { currentPhase.outcome = 'POST'; continue; }
 
-    // Missed wide
-    if (/Missed the goal wide/.test(line)) { currentPhase.outcome = 'MISSED'; continue; }
+    // FinalWhistle currently emits the grammatically awkward "narrow" source wording.
+    // Preserve it in rawLines, but normalize the semantic qualifier for generated UI.
+    if ((m = line.match(/^Missed the goal (wide|narrow)[!.]$/))) {
+      currentPhase.outcome = 'MISSED';
+      currentPhase.missType = m[1];
+      continue;
+    }
 
     // GOAL
     if (line === 'GOAL!') { currentPhase.outcome = 'GOAL'; continue; }
@@ -611,7 +638,8 @@ function parsePlayerToken(str) {
 // FUMBLED (a save the GK didn't control — see the narrative parser above) belongs here
 // alongside SAVED: the attacker did get a shot away and the preceding duel should read
 // as won either way. What happens to the loose ball afterward is a separate concern,
-// captured via blockRecovery below, not something that changes what the shot itself was.
+// exposed through looseBallRecovery (with blockRecovery retained as its compatibility
+// alias) below, not something that changes what the shot itself was.
 const SHOT_TERMINALS = ['GOAL','SAVED','FUMBLED','POST','MISSED','SHOT_BLOCKED'];
 
 // PB, SP (corner), and FK-with-delivery phases all resolve the same way: a pass into
@@ -657,6 +685,11 @@ function passDuelShotSteps(mk, phase, sv, isPenalty, passStepType, duelStepType)
       isPenalty,
       values:     { shot: qv(sv.shot ?? null), gkSave: qv(sv.gkSave ?? null) },
       outcome:    phase.outcome,
+      missType:   phase.missType,
+      gkContextLines: phase.gkContextLines || [],
+      blockRecovery: phase.blockRecovery,
+      looseBallRecovery: phase.blockRecovery,
+      looseBallResolution: phase.looseBallResolution,
     }));
   }
   return steps;
@@ -671,7 +704,8 @@ function phaseToSteps(phase, streamValues, streamEvents) {
     stepType, isCA: phase.isCA || false,
     attackingTeam: phase.attackingTeam, attackingSide: phase.attackingSide,
     defendingTeam: phase.defendingTeam, defendingSide: phase.defendingSide,
-    yellowCard: null, fouler: null, blockRecovery: null,
+    yellowCard: null, fouler: null, blockRecovery: null, looseBallRecovery: null,
+    looseBallResolution: null,
     ...extra,
   });
 
@@ -718,6 +752,11 @@ function phaseToSteps(phase, streamValues, streamEvents) {
           isPenalty,
           values:     { shot: qv(sv.shot ?? null), gkSave: qv(sv.gkSave ?? null) },
           outcome:    phase.outcome,
+          missType:   phase.missType,
+          gkContextLines: phase.gkContextLines || [],
+          blockRecovery: phase.blockRecovery,
+          looseBallRecovery: phase.blockRecovery,
+          looseBallResolution: phase.looseBallResolution,
         }));
       }
       break;
@@ -760,10 +799,37 @@ function phaseToSteps(phase, streamValues, streamEvents) {
           shotType:   phase.shotType,
           values:     { shot: qv(sv.shot ?? null), gkSave: qv(sv.gkSave ?? null) },
           outcome:    phase.outcome,
+          missType:   phase.missType,
+          gkContextLines: phase.gkContextLines || [],
+          blockRecovery: phase.blockRecovery,
+          looseBallRecovery: phase.blockRecovery,
+          looseBallResolution: phase.looseBallResolution,
         }));
       } else {
         steps.push(...passDuelShotSteps(mk, phase, sv, isPenalty, 'FK_PASS', 'FK_DUEL'));
       }
+      break;
+    }
+
+    case 'SHOT': {
+      // A subsequent live-ball attempt after a rebound has no pass/duel of its own.
+      // It still becomes the same atomic SHOT model consumed everywhere else.
+      steps.push(mk('SHOT', {
+        shooter:    phase.shotTaker || phase.passer,
+        gk:         phase.gkPlayer,
+        shotType:   phase.shotType,
+        shotAngle:  phase.shotAngle,
+        oneOnOne:   phase.oneOnOne,
+        isLongShot: phase.isLongShot,
+        isPenalty,
+        values:     { shot: qv(sv.shot ?? null), gkSave: qv(sv.gkSave ?? null) },
+        outcome:    phase.outcome,
+        missType:   phase.missType,
+        gkContextLines: phase.gkContextLines || [],
+        blockRecovery: phase.blockRecovery,
+        looseBallRecovery: phase.blockRecovery,
+        looseBallResolution: phase.looseBallResolution,
+      }));
       break;
     }
 
@@ -788,7 +854,10 @@ function assignSides(phases, attackTeam, attackSide, defendTeam, defendSide) {
     const stamp = (pl, team, side) => pl && (pl.team = team, pl.side = side);
     stamp(p.passer,  at, as); stamp(p.target,  at, as); stamp(p.shotTaker, at, as);
     stamp(p.passRequest?.player, at, as);
-    stamp(p.defender, dt, ds); stamp(p.blockRecovery, dt, ds);
+    stamp(p.defender, dt, ds);
+    stamp(p.blockRecovery,
+      p.blockRecoveryRole === 'attacker' ? at : dt,
+      p.blockRecoveryRole === 'attacker' ? as : ds);
     if (p.gkPlayer) { p.gkPlayer.team = dt; p.gkPlayer.side = ds; }
     // Carried onto every step built from this phase (see phaseToSteps's mk()) so the
     // viewer can attribute a pass/duel/shot to whichever team actually performed it —
@@ -849,6 +918,30 @@ function annotateScores(narOpps, opportunities) {
   }
 }
 
+function summarizeNarrativePhase(phase, index) {
+  return {
+    index,
+    phaseType: phase.phaseType || null,
+    isCA: !!phase.isCA,
+    passer: phase.passer?.name || null,
+    target: phase.target?.name || null,
+    defender: phase.defender?.name || null,
+    shotTaker: phase.shotTaker?.name || null,
+    goalkeeper: phase.gkPlayer?.name || null,
+    outcome: phase.outcome || null,
+    looseBallRecovery: phase.blockRecovery?.name || null,
+    looseBallResolution: phase.looseBallResolution || null,
+  };
+}
+
+function summarizeStreamPhase(phase, index) {
+  return {
+    index,
+    valueKeys: Object.keys(phase?.values || {}).sort(),
+    events: [...(phase?.events || [])],
+  };
+}
+
 function buildPlayerRegistry(opportunities, tacticalEvents) {
   const reg = {};
   const upsert = (p) => {
@@ -860,7 +953,8 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
   };
   const players = (step) => {
     [step.from, step.to, step.attacker, step.defender, step.dribbler,
-     step.shooter, step.gk, step.fouler, step.yellowCard, step.blockRecovery]
+     step.shooter, step.gk, step.fouler, step.yellowCard,
+     step.blockRecovery, step.looseBallRecovery]
       .forEach(upsert);
   };
   for (const opp of opportunities) for (const s of opp.steps) players(s);
@@ -1245,6 +1339,8 @@ function parseMatch(streamText, narrativeText, meta) {
       phaseMismatches.push({
         minute: narOpp.minute, team: narOpp.team,
         narrativePhaseCount: narOpp.phases.length, streamPhaseCount: allStreamPhases.length,
+        narrativePhases: narOpp.phases.map(summarizeNarrativePhase),
+        streamPhases: allStreamPhases.map(summarizeStreamPhase),
       });
     }
 
@@ -1273,6 +1369,8 @@ function parseMatch(streamText, narrativeText, meta) {
       scoreAfter:      null,
       hasGoal, hasShot, hasCard,
       finalOutcome:    finalStep?.outcome || null,
+      finalMissType:   [...steps].reverse().find(s =>
+        (s.stepType === 'SHOT' || s.stepType === 'FK_SHOT') && s.missType)?.missType || null,
       steps,
       rawLines:            narOpp.rawLines || [],
       streamMatchConfidence,

@@ -1,0 +1,18 @@
+{
+  "homeTeam": "FC Lions Pouchov",
+  "awayTeam": "Opponent Team",
+  "opportunities": 1,
+  "homeOpportunities": 1,
+  "awayOpportunities": 0,
+  "homeShots": 0,
+  "awayShots": 2,
+  "homeGoals": 0,
+  "awayGoals": 0,
+  "counterAttacksCreatedHome": 0,
+  "counterAttacksCreatedAway": 1,
+  "tacticalEventCount": 0,
+  "homeTacticalPhases": 1,
+  "awayTacticalPhases": 1,
+  "validationConfidence": "exact",
+  "warnings": 0
+}
