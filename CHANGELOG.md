@@ -11,7 +11,13 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 
 ## [Unreleased]
 
+## [0.5.0] — Firefox compatibility
+
 ### Added
+- One source tree for Chrome/Chromium and Firefox, backed by namespace, background-
+  environment, sender-validation, Promise storage, and fallback tab-selection tests.
+- A stable Gecko ID and explicit no-data-collection declaration for future AMO signing.
+- Mozilla `web-ext lint` as part of the local and CI release gate.
 - Kickoff scraping and tactical-phase display for all five main team tactics: Mentality,
   Style of Play, Marking, Defence Focus, and Preferred Side.
 - Extra-time break, preferred-side order, and successful/failed offside-trap parsing,
@@ -20,6 +26,13 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   lines and nearby narrative context.
 
 ### Changed
+- Runtime extension APIs now pass through a minimal `browser`/`chrome` boundary and use
+  Promise-based MV3 calls in both browsers.
+- The shared MV3 manifest declares both Chrome's service worker and Firefox's background
+  scripts; `utils.js` is loaded exactly once in either environment.
+- Sender validation now compares against `runtime.getURL('viewer.html')`, retaining the
+  extension-ID/tab/path checks while securely supporting `moz-extension:` URLs.
+- JPG decode failures use browser-neutral wording.
 - Renamed the Squad tab to **Tactics** and removed the redundant fixed-window Phases tab.
 - Recovered counter-attacks now emphasize the route that continued while keeping an
   earlier blocked pass as subdued pitch context; Chain Detail uses the actual attacking
@@ -125,7 +138,7 @@ version bump — see `git log` for that history if needed.
 
 ## Release checklist
 
-1. `npm run verify`
+1. `npm ci && npm run verify`
 2. Load the unpacked extension in Chrome (`chrome://extensions` → Developer mode →
    Load unpacked)
 3. Scrape a current FinalWhistle match
@@ -141,4 +154,7 @@ version bump — see `git log` for that history if needed.
 13. Clear and rescrape, then scrape the same tab again
 14. Bump `manifest.json`'s `version` (keep `package.json` in sync)
 15. Update this file
-16. Commit/tag
+16. Temporarily install in Firefox (`about:debugging` → This Firefox → Load Temporary Add-on)
+17. Repeat the scrape, tabs, storage, pinning, and all three JPG-export scopes in Firefox
+18. Record both browser versions and manual smoke results in the release notes
+19. Commit/tag

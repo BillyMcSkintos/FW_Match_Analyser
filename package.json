@@ -1,11 +1,28 @@
 {
   "name": "fw-match-analyser",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "FinalWhistle Match Analyser browser extension",
   "scripts": {
     "test": "node --test parser.test.js viewer.test.js scraper.test.js analytics.test.js smoke.test.js integration.test.js static-audit.test.js background.test.js",
     "check": "node --check parser.js && node --check analytics.js && node --check viewer.js && node --check scraper.js && node --check background.js && node --check utils.js",
-    "verify": "npm run test && npm run check"
+    "lint:firefox": "web-ext lint --source-dir .",
+    "verify": "npm run test && npm run check && npm run lint:firefox"
+  },
+  "devDependencies": {
+    "web-ext": "10.6.0"
+  },
+  "webExt": {
+    "ignoreFiles": [
+      ".github/**",
+      "*.test.js",
+      "fixtures",
+      "package.json",
+      "package-lock.json",
+      "README.md",
+      "CHANGELOG.md",
+      "FIREFOX_COMPATIBILITY.md",
+      "web-ext-artifacts/**"
+    ]
   }
 }

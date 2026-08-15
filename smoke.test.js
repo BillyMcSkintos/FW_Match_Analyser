@@ -60,9 +60,10 @@ test('viewer.html\'s own script order loads cleanly into one shared context, wit
       body: { addEventListener() {} },
     },
     chrome: {
-      storage: { local: { get(_k, cb) { if (cb) cb({}); }, set() {}, remove() {} } },
+      storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
       runtime: { getURL: p => 'chrome-extension://test/' + p, sendMessage: async () => ({}) },
-      tabs: { query: async () => [] },
+      tabs: { query: async () => [], update: async () => {}, create: async () => {} },
+      windows: { update: async () => {} },
     },
     location: { search: '' },
     URLSearchParams,

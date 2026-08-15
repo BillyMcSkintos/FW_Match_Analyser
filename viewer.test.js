@@ -22,10 +22,17 @@ function makeStubElement() {
   return el;
 }
 
-function loadViewerContext() {
+function loadViewerContext({ namespace = 'chrome' } = {}) {
   const src = fs.readFileSync(path.join(__dirname, 'viewer.js'), 'utf8');
+  const utilsSrc = fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8');
   const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
   const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
+  const api = {
+    storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
+    runtime: { getURL: p => `${namespace === 'browser' ? 'moz-extension' : 'chrome-extension'}://test/${p}`, getManifest: () => ({ version: '0.5.0-test' }), sendMessage: async () => ({}) },
+    tabs: { query: async () => [], update: async () => {}, create: async () => {} },
+    windows: { update: async () => {} },
+  };
   const sandbox = {
     console,
     document: {
@@ -35,24 +42,28 @@ function loadViewerContext() {
       addEventListener() {},
       createElement() { return makeStubElement(); },
     },
-    chrome: {
-      storage: { local: { get(_k, cb) { if (cb) cb({}); }, set() {}, remove() {} } },
-      runtime: { getURL: p => 'chrome-extension://test/' + p, getManifest: () => ({ version: '0.4.0-test' }), sendMessage: async () => ({}) },
-      tabs: { query: async () => [] },
-    },
     location: { search: '' },
     URLSearchParams,
   };
+  sandbox[namespace] = api;
   const context = vm.createContext(sandbox);
   // parser.js's functions (qualityLabel, qv, tierColor-adjacent) and analytics.js's
   // functions (phasePerformance, opportunityFunnel, ...) are referenced by viewer.js, so
   // load both into the same context first, mirroring viewer.html's own script order:
   // utils.js, parser.js, analytics.js, viewer.js.
+  vm.runInContext(utilsSrc, context, { filename: 'utils.js' });
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
   vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });
   return context;
 }
+
+test('viewer initializes with either WebExtension API namespace', () => {
+  const chromium = loadViewerContext({ namespace: 'chrome' });
+  assert.equal(chromium.ext, chromium.chrome);
+  const firefox = loadViewerContext({ namespace: 'browser' });
+  assert.equal(firefox.ext, firefox.browser);
+});
 
 test('diagnostic report includes the match URL and exact unknown lines with nearby context', () => {
   const ctx = loadViewerContext();
@@ -75,7 +86,7 @@ test('diagnostic report includes the match URL and exact unknown lines with near
   };
   const report = ctx.buildDiagnosticReport(scrape, match);
   assert.match(report, /https:\/\/example\.finalwhistle\.org\/match\/123/);
-  assert.match(report, /0\.4\.0-test/);
+  assert.match(report, /0\.5\.0-test/);
   assert.match(report, /New FinalWhistle wording/);
   assert.match(report, /Known action/);
   assert.match(report, /"unrecognized": true/);
@@ -638,11 +649,11 @@ test('the stats panel escapes an </span><svg onload=...> breakout payload in a s
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Backward compatibility with old chrome.storage.local scrape objects
+// Backward compatibility with old storage.local scrape objects
 // ─────────────────────────────────────────────────────────────────────────────
 // Fields like validation, sequence, tacticalContext, and tactical phases only ever
 // exist on the FRESHLY-COMPUTED match model — none of those were ever part of what gets
-// PERSISTED to chrome.storage.local (the persisted shape is scraper.js's own
+// PERSISTED to storage.local (the persisted shape is scraper.js's own
 // {narrative, telemetry, homeTeam, awayTeam, statistics, errors, warnings, scrapedAt}
 // output; parseMatch() rebuilds the whole match model fresh from stored narrative/
 // telemetry text on every load). These tests still exist because that's an invariant
@@ -686,6 +697,7 @@ test('render() does not throw on malformed narrative text that never resolves an
 // panels by id, so it needs the same element object back on every $('panel-x') call.
 function loadViewerContextWithStableElements() {
   const src = fs.readFileSync(path.join(__dirname, 'viewer.js'), 'utf8');
+  const utilsSrc = fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8');
   const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
   const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
   const elements = new Map();
@@ -703,14 +715,16 @@ function loadViewerContextWithStableElements() {
       createElement() { return makeStubElement(); },
     },
     chrome: {
-      storage: { local: { get(_k, cb) { if (cb) cb({}); }, set() {}, remove() {} } },
+      storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
       runtime: { getURL: p => 'chrome-extension://test/' + p, sendMessage: async () => ({}) },
-      tabs: { query: async () => [] },
+      tabs: { query: async () => [], update: async () => {}, create: async () => {} },
+      windows: { update: async () => {} },
     },
     location: { search: '' },
     URLSearchParams,
   };
   const context = vm.createContext(sandbox);
+  vm.runInContext(utilsSrc, context, { filename: 'utils.js' });
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
   vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });

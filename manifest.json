@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FinalWhistle Match Analyser",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Extract and validate FinalWhistle match data",
   "permissions": [
     "activeTab",
@@ -28,7 +28,22 @@
     }
   },
   "background": {
+    "scripts": [
+      "utils.js",
+      "background.js"
+    ],
     "service_worker": "background.js"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "fw-match-analyser@billymcskintos.github.io",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

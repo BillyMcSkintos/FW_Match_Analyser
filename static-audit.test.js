@@ -10,7 +10,7 @@
 //
 // The permission/manifest assertions below check THIS project's actual, intentional
 // shape — activeTab + tabs + scripting + storage, host_permissions scoped to
-// finalwhistle.org, chrome.storage.local (not .session). See README.md's Security
+// finalwhistle.org, extension storage.local (not .session). See README.md's Security
 // section for why each of those is the deliberate choice, not an oversight.
 
 const { test } = require('node:test');
@@ -37,6 +37,10 @@ test('manifest declares exactly the permissions/host_permissions this project ac
     assert.equal(Object.hasOwn(manifest, field), false, `manifest must not declare "${field}"`);
   }
   assert.equal(manifest.background.service_worker, 'background.js');
+  assert.deepEqual(manifest.background.scripts, ['utils.js', 'background.js']);
+  assert.equal(manifest.browser_specific_settings.gecko.id, 'fw-match-analyser@billymcskintos.github.io');
+  assert.equal(manifest.browser_specific_settings.gecko.strict_min_version, '140.0');
+  assert.deepEqual(manifest.browser_specific_settings.gecko.data_collection_permissions.required, ['none']);
 });
 
 test('viewer.html only loads local scripts, and never inline event handlers', () => {
@@ -59,14 +63,14 @@ test('no network-exfiltration, dynamic-eval, or unexpected persistent-storage si
     [/\bWebSocket\b/, 'WebSocket'],
     [/\bEventSource\b/, 'EventSource'],
     [/\bnavigator\.sendBeacon\b/, 'sendBeacon'],
-    [/\bchrome\.downloads\b/, 'downloads API'],
-    [/\bchrome\.tabs\.captureVisibleTab\b/, 'tab screenshot API'],
-    [/\bchrome\.tabCapture\b/, 'tab capture API'],
-    [/\bchrome\.desktopCapture\b/, 'desktop capture API'],
+    [/\b(?:chrome|browser|ext)\.downloads\b/, 'downloads API'],
+    [/\b(?:chrome|browser|ext)\.tabs\.captureVisibleTab\b/, 'tab screenshot API'],
+    [/\b(?:chrome|browser|ext)\.tabCapture\b/, 'tab capture API'],
+    [/\b(?:chrome|browser|ext)\.desktopCapture\b/, 'desktop capture API'],
     [/\bgetDisplayMedia\b/, 'screen capture API'],
-    [/\bchrome\.cookies\b/, 'cookies API'],
+    [/\b(?:chrome|browser|ext)\.cookies\b/, 'cookies API'],
     [/\bdocument\.cookie\b/, 'document.cookie'],
-    // Deliberately NOT forbidding chrome.storage.local (this project's own persisted
+    // Deliberately NOT forbidding extension storage.local (this project's own persisted
     // scrape storage — see background.js) or localStorage/sessionStorage generically;
     // only the sinks that would smuggle data OUT of the extension's own trusted storage
     // model.

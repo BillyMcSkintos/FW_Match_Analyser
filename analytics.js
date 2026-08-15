@@ -5,7 +5,7 @@
  *
  * Pure analytics layer. Consumes the parsed match model built by parser.js
  * (opportunities, steps, tacticalEvents, tacticalPhases, validation) and returns plain
- * structured analysis objects. No DOM, no chrome.*, no global viewer state — every
+ * structured analysis objects. No DOM, no WebExtension APIs, no global viewer state — every
  * function here takes `match` (and sometimes a teamSide/options argument) and returns
  * plain data, so it is directly testable and reusable by any future UI.
  *

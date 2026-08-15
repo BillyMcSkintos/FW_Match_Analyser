@@ -1844,8 +1844,8 @@ function narrativeContexts(narrative, unknownLines, radius = 3) {
 
 function buildDiagnosticReport(scrape = _lastRenderedScrape, match = _match) {
   const validation = match?.validation || {};
-  const manifestVersion = (typeof chrome !== 'undefined' && chrome.runtime?.getManifest)
-    ? chrome.runtime.getManifest().version : 'unknown';
+  const manifestVersion = ext?.runtime?.getManifest
+    ? ext.runtime.getManifest().version : 'unknown';
   const scrapedDate = new Date(scrape?.scrapedAt);
   const scrapedAt = Number.isNaN(scrapedDate.getTime()) ? String(scrape?.scrapedAt || 'unknown') : scrapedDate.toISOString();
   const finalScore = match?.meta?.finalScore;
@@ -2628,7 +2628,7 @@ async function createExportJpeg(scope) {
     const image = new Image();
     image.src = svgUrl;
     try { await image.decode(); }
-    catch { throw new Error('EXPORT_RASTER_FAILED: Chrome could not decode the local SVG presentation.'); }
+    catch { throw new Error('EXPORT_RASTER_FAILED: The browser could not decode the local SVG presentation.'); }
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -2733,7 +2733,7 @@ document.addEventListener('click', e => {
 $('btn-scrape').addEventListener('click', async () => {
   $('status').textContent = 'Scraping…'; $('btn-scrape').disabled = true;
   try {
-    const data = await chrome.runtime.sendMessage({ type: 'SCRAPE_PAGE' });
+    const data = await ext.runtime.sendMessage({ type: 'SCRAPE_PAGE' });
     render(data);
     $('status').textContent = data.ok ? 'OK' : `${data.errors?.length||0} error(s)`;
   } catch(e) {
@@ -2743,13 +2743,13 @@ $('btn-scrape').addEventListener('click', async () => {
 });
 
 $('btn-load').addEventListener('click', async () => {
-  const s = await chrome.storage.local.get('lastScrape');
+  const s = await ext.storage.local.get('lastScrape');
   if (s.lastScrape) { render(s.lastScrape); $('status').textContent = 'Loaded'; }
   else $('status').textContent = 'Nothing stored';
 });
 
 $('btn-clear').addEventListener('click', async () => {
-  await chrome.storage.local.remove('lastScrape');
+  await ext.storage.local.remove('lastScrape');
   _match = null;
   _lastRenderedScrape = null;
   $('status').textContent = 'Cleared';
@@ -2768,15 +2768,19 @@ $('btn-clear').addEventListener('click', async () => {
 // branch below) — storage.local's "lastScrape" is a single shared slot, and loading
 // it here would just show whatever this tab's own last scrape was.
 $('btn-new-tab').addEventListener('click', async () => {
-  const fwTabs = await chrome.tabs.query({ url: '*://*.finalwhistle.org/*' });
+  const fwTabs = await ext.tabs.query({ url: '*://*.finalwhistle.org/*' });
   if (fwTabs.length) {
     const mostRecent = mostRecentlyAccessed(fwTabs);
-    await chrome.tabs.update(mostRecent.id, { active: true });
-    await chrome.windows.update(mostRecent.windowId, { focused: true });
+    if (mostRecent) {
+      await ext.tabs.update(mostRecent.id, { active: true });
+      await ext.windows.update(mostRecent.windowId, { focused: true });
+    } else {
+      await ext.tabs.create({ url: 'https://www.finalwhistle.org' });
+    }
   } else {
-    await chrome.tabs.create({ url: 'https://www.finalwhistle.org' });
+    await ext.tabs.create({ url: 'https://www.finalwhistle.org' });
   }
-  await chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') + '?fresh=1' });
+  await ext.tabs.create({ url: ext.runtime.getURL('viewer.html') + '?fresh=1' });
 });
 
 $('btn-save-jpg').addEventListener('click', saveJpg);
@@ -2792,11 +2796,11 @@ updateExportControls();
 //   (neither)     — plain viewer.html (e.g. a reload) — auto-load the last scrape.
 const _launchParams = new URLSearchParams(location.search);
 if (_launchParams.get('autoscrape') === '1') {
-  chrome.storage.local.remove('lastScrape').then(() => $('btn-scrape').click());
+  ext.storage.local.remove('lastScrape').then(() => $('btn-scrape').click());
 } else if (_launchParams.get('fresh') === '1') {
   $('status').textContent = 'Pick a match on FinalWhistle, then Scrape';
 } else {
-  chrome.storage.local.get('lastScrape', ({lastScrape}) => {
+  ext.storage.local.get('lastScrape').then(({lastScrape}) => {
     if (lastScrape) { render(lastScrape); $('status').textContent = 'Loaded'; }
   });
 }

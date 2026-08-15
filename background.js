@@ -3,11 +3,16 @@
 /**
  * Extension service worker. Toolbar icon click opens/focuses the viewer tab;
  * SCRAPE_PAGE messages from viewer.js are relayed here and fulfilled by
- * injecting scraper.js into the active FinalWhistle tab via chrome.scripting.
+ * injecting scraper.js into the active FinalWhistle tab via the WebExtension API.
  */
-importScripts('utils.js');
+// Chrome starts this file as a service worker and needs the explicit import. Firefox
+// loads utils.js first through background.scripts in manifest.json, so importing it a
+// second time would redeclare its shared globals.
+if (typeof mostRecentlyAccessed !== 'function' && typeof importScripts === 'function') {
+  importScripts('utils.js');
+}
 
-// Tags the shape of what gets persisted to chrome.storage.local, so a future change to
+// Tags the shape of what gets persisted to extension storage.local, so a future change to
 // that shape has something to check against instead of guessing whether an old stored
 // object predates it. viewer.js's render() does not currently read this — it already
 // tolerates a completely bare {narrative, telemetry, homeTeam, awayTeam} object with no
@@ -16,38 +21,47 @@ importScripts('utils.js');
 // introducing a migration framework now.
 const LASTSCRAPE_SCHEMA_VERSION = 1;
 
-chrome.action.onClicked.addListener(async () => {
-  const base = chrome.runtime.getURL('viewer.html');
+ext.action.onClicked.addListener(async () => {
+  const base = ext.runtime.getURL('viewer.html');
   // '*' suffix so an already-open tab is found whether or not it carries the
   // ?autoscrape=1 / ?fresh=1 query string viewer.html gets launched with below.
-  const existing = await chrome.tabs.query({ url: base + '*' });
-  if (existing.length > 0) {
-    await chrome.tabs.update(existing[0].id, { active: true });
-    await chrome.windows.update(existing[0].windowId, { focused: true });
+  const existing = await ext.tabs.query({ url: base + '*' });
+  const reusable = mostRecentlyAccessed(existing);
+  if (reusable) {
+    await ext.tabs.update(reusable.id, { active: true });
+    await ext.windows.update(reusable.windowId, { focused: true });
   } else {
     // Fresh launch (not already open in a tab) — the tab clears any previous
     // scrape and pulls in whatever match report is currently open itself, via
     // the ?autoscrape=1 flag reusing the normal Scrape button flow, so it opens
     // already showing current data instead of stale leftovers from last time.
-    chrome.tabs.create({ url: base + '?autoscrape=1' });
+    await ext.tabs.create({ url: base + '?autoscrape=1' });
   }
 });
 
-// chrome.runtime.onMessage already only fires for this extension's own contexts by
+// runtime.onMessage already only fires for this extension's own contexts by
 // default (no externally_connectable is declared in manifest.json, so arbitrary web
 // pages/other extensions can't reach this listener at all) — this narrows it further,
 // to specifically the packaged viewer page, as defense-in-depth against any future
 // content script or extension page this project might add later that shouldn't be able
 // to trigger a scrape.
 function isTrustedViewerSender(sender) {
-  if (!sender || sender.id !== chrome.runtime.id) return false;
+  if (!sender || sender.id !== ext.runtime.id) return false;
   if (!Number.isSafeInteger(sender.tab?.id)) return false;
-  let url;
-  try { url = new URL(sender.url); } catch { return false; }
-  return url.protocol === 'chrome-extension:' && url.hostname === chrome.runtime.id && url.pathname === '/viewer.html';
+  let expected;
+  let actual;
+  try {
+    expected = new URL(ext.runtime.getURL('viewer.html'));
+    actual = new URL(sender.url);
+  } catch { return false; }
+  return actual.protocol === expected.protocol &&
+    actual.hostname === expected.hostname &&
+    actual.port === expected.port &&
+    actual.pathname === expected.pathname &&
+    actual.username === '' && actual.password === '';
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'SCRAPE_PAGE') {
     if (!isTrustedViewerSender(sender)) {
       sendResponse({ ok: false, errors: ['Rejected a scrape request from an unexpected sender.'] });
@@ -64,7 +78,7 @@ async function scrapeActiveTab() {
   // Query for FinalWhistle tabs directly (matches host_permissions) instead of listing
   // every tab and filtering by URL substring, and pick the most-recently-accessed one
   // with a single pass instead of sorting the whole result just to take the max.
-  const tabs = await chrome.tabs.query({ url: 'https://*.finalwhistle.org/*' });
+  const tabs = await ext.tabs.query({ url: 'https://*.finalwhistle.org/*' });
 
   // Prefer a tab actually on a match report (/match/ in the URL) over some other
   // FinalWhistle page (league table, team page, etc.) that happens to be more
@@ -75,7 +89,7 @@ async function scrapeActiveTab() {
 
   if (!fwTab) {
     // Fall back to active tab
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [active] = await ext.tabs.query({ active: true, currentWindow: true });
     if (!active?.url?.includes('finalwhistle.org')) {
       return { ok: false, errors: ['No FinalWhistle tab found. Open a match report first.'] };
     }
@@ -84,7 +98,7 @@ async function scrapeActiveTab() {
   return runScraper(fwTab.id);
 }
 
-// scraper.js runs INJECTED INTO FinalWhistle's own page (chrome.scripting.executeScript),
+// scraper.js runs INJECTED INTO FinalWhistle's own page (scripting.executeScript),
 // sharing that page's JS realm — a compromised or just buggy page could tamper with what
 // comes back, including prototype-polluting the object, before background.js stores or
 // returns it. sanitizeScrapeResult() below (used by runScraper()) is the guard against
@@ -196,14 +210,19 @@ function sanitizeScrapeResult(value) {
 }
 
 async function runScraper(tabId) {
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['scraper.js'] });
-  const [{ result }] = await chrome.scripting.executeScript({
+  await ext.scripting.executeScript({ target: { tabId }, files: ['scraper.js'] });
+  const injections = await ext.scripting.executeScript({
     target: { tabId },
     func: () => fwScrapeWithTelemetry(),
   });
+  // Both browsers return InjectionResult[], but Firefox may also attach an `error`
+  // property to a frame result. Only the top frame is targeted here.
+  const injection = injections?.[0];
+  if (injection?.error) throw new Error(String(injection.error.message || injection.error));
+  const result = injection?.result;
   const data = sanitizeScrapeResult(result) || { ok: false, errors: ['No result from scraper'] };
   if (data.narrative || data.telemetry) {
-    await chrome.storage.local.set({ lastScrape: { ...data, schemaVersion: LASTSCRAPE_SCHEMA_VERSION } });
+    await ext.storage.local.set({ lastScrape: { ...data, schemaVersion: LASTSCRAPE_SCHEMA_VERSION } });
   }
   return data;
 }

@@ -1,6 +1,6 @@
 # FinalWhistle Match Analyser
 
-A Chrome extension that scrapes match reports from [FinalWhistle](https://www.finalwhistle.org)
+A Chrome/Chromium and Firefox extension that scrapes match reports from [FinalWhistle](https://www.finalwhistle.org)
 (a browser-based football management game) and turns them into an interactive,
 readable breakdown of what actually happened in a match.
 
@@ -45,7 +45,7 @@ statistics views.
 ## Security
 
 This extension only ever reads a FinalWhistle match report page and writes to its own
-`chrome.storage.local` — there is no network request, no external upload path, and no
+the browser's `storage.local` — there is no network request, no external upload path, and no
 data leaves the browser. That claim isn't just asserted:
 
 - `static-audit.test.js` mechanically scans the whole runtime bundle for forbidden
@@ -64,12 +64,12 @@ data leaves the browser. That claim isn't just asserted:
 
 Two permission/storage choices worth noting explicitly, since a narrower-looking
 alternative exists for each and isn't used:
-- **`chrome.storage.local`, not `.session`** — `.session` is cleared on browser
+- **`storage.local`, not `.session`** — `.session` is cleared on browser
   restart; this extension's **Load** button reopens the last scrape from storage
   specifically so it survives that, so `.local`'s persistence is required, not just
   convenient.
 - **`tabs` permission, not `activeTab`-only** — `background.js` queries other
-  FinalWhistle tabs by URL (`chrome.tabs.query`, "prefer an actual `/match/` tab") and
+  FinalWhistle tabs by URL (`tabs.query`, "prefer an actual `/match/` tab") and
   **New Tab** opens/focuses tabs the user isn't currently on. `activeTab` alone only
   grants access to whichever tab is focused when the toolbar icon is clicked — it can't
   see or target any other tab, which both of those features need.
@@ -111,12 +111,30 @@ header for the same distinction applied to the analysis layer.
 
 ## Installing
 
+### Chrome / Chromium
+
 This isn't on the Chrome Web Store — load it as an unpacked extension:
 
 1. Clone or download this repo.
 2. In Chrome, go to `chrome://extensions`, enable **Developer mode**.
 3. Click **Load unpacked** and select this folder.
 4. Open a match report on finalwhistle.org, then click the extension icon.
+
+### Firefox (temporary development installation)
+
+Firefox 140 or newer is required. Temporary installations are intended for development
+and disappear when Firefox restarts:
+
+1. Clone or download this repo.
+2. In Firefox, open `about:debugging` and choose **This Firefox**.
+3. Click **Load Temporary Add-on**.
+4. Select this folder's `manifest.json`.
+5. Open a FinalWhistle match report, then click the extension icon.
+
+The codebase is prepared for Mozilla Add-ons signing, but v0.5.0 is not automatically
+published to AMO. Normal end-user Firefox installation requires a Mozilla-signed `.xpi`;
+the stable Gecko ID is already declared in `manifest.json`, but its availability is only
+confirmed when the first AMO submission is made.
 
 ## Usage
 
@@ -151,7 +169,7 @@ FinalWhistle match page
 ```
 
 Each layer only depends on the one before it, never the other way around, and
-`analytics.js` in particular has zero DOM/`chrome.*`/global-viewer-state dependency —
+`analytics.js` in particular has zero DOM/WebExtension/global-viewer-state dependency —
 it takes a parsed match object and returns plain data, so it's directly unit-testable
 and reusable outside the viewer. `parser.js`'s own tactical-construct audit comment and
 `analytics.js`'s file header explain what each layer does and does not claim — see
@@ -172,13 +190,16 @@ tab-like context to prevent repeat-scrape declaration failures.
 
 ## Development
 
-No build step — the extension runs directly from source, no bundler, framework, or
-TypeScript. Tests use Node's built-in test runner, no external framework:
+No build step — the extension runs directly from source, with no bundler, framework, or
+TypeScript. Tests use Node's built-in test runner; Mozilla's `web-ext` is a development-
+only dependency used to lint the Firefox add-on manifest and package contents:
 
 ```bash
-npm test      # all regression/integration/smoke tests
-npm run check # node --check on every extension JS file
-npm run verify # both of the above — run this before opening a PR
+npm ci                # install the pinned Firefox validation tool
+npm test              # all regression/integration/smoke tests
+npm run check         # node --check on every extension JS file
+npm run lint:firefox  # Mozilla web-ext lint
+npm run verify        # all of the above checks — run before opening a PR
 ```
 
 ### Project structure
@@ -186,12 +207,12 @@ npm run verify # both of the above — run this before opening a PR
 | File | Role |
 |---|---|
 | `parser.js` | Raw narrative + telemetry → trusted match model. Merges the narrative and telemetry stream into a flat, per-opportunity `steps[]` model, reconstructs tactical state/phases. See the file header and the tactical-construct audit comment above `parseNarrative`. |
-| `analytics.js` | Match model → derived tactical analysis (opportunity funnel, turnovers, defensive failure chains, tactical-phase performance, player/GK/set-piece/shot/pass profiles). Pure — no DOM, no `chrome.*`. See the file header for the evidence-category convention every function follows. |
+| `analytics.js` | Match model → derived tactical analysis (opportunity funnel, turnovers, defensive failure chains, tactical-phase performance, player/GK/set-piece/shot/pass profiles). Pure — no DOM or WebExtension APIs. See the file header for the evidence-category convention every function follows. |
 | `viewer.js` | Renders the whole UI from a parsed match + its analysis — pitch, timeline, list, and tabs. See the file header for a section map. |
 | `viewer.html` | Markup + styling for the viewer page; also the canonical script-load order (`utils.js`, `parser.js`, `analytics.js`, `viewer.js`) that `smoke.test.js` derives its check from. |
 | `scraper.js` | FinalWhistle DOM → raw scrape payload, including the five kickoff tactics. Injected into the page tab on demand and safe to inject repeatedly. |
-| `background.js` | Extension lifecycle — toolbar click handling, tab selection, script injection, `chrome.storage.local` persistence. |
-| `utils.js` | Genuinely shared small utilities only (used by both `background.js` and `viewer.js`) — not a general dumping ground. |
+| `background.js` | Cross-browser extension lifecycle — toolbar click handling, tab selection, script injection, and `storage.local` persistence. |
+| `utils.js` | Tiny `browser`/`chrome` API boundary plus genuinely shared tab-selection logic used by both background and viewer contexts. |
 | `fixtures/` | Sanitized narrative/telemetry/expected-invariant fixtures used by `integration.test.js`; see `fixtures/README.md` for scenario coverage and provenance. |
 | `*.test.js` | `parser.test.js`, `viewer.test.js`, `scraper.test.js`, `analytics.test.js`, `background.test.js` — one per layer above. `integration.test.js` — parser→analytics contract tests. `smoke.test.js` — the script-load-order check described above. `static-audit.test.js` — the forbidden-sinks/secret-scan checks described in [Security](#security). |
 
@@ -214,6 +235,8 @@ npm run verify # both of the above — run this before opening a PR
   (`.github/workflows/test.yml`) runs the same thing on every push/PR to `main`.
 - See [CHANGELOG.md](CHANGELOG.md) for the release checklist and version convention
   before cutting a release.
+- See [FIREFOX_COMPATIBILITY.md](FIREFOX_COMPATIBILITY.md) for the audited API matrix,
+  background strategy, and manual browser smoke-test checklist.
 
 ## License
 

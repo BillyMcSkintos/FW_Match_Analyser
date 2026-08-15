@@ -18,12 +18,8 @@ jobs:
           # version number pinned here that would silently go stale.
           node-version: lts/*
 
-      # No package-lock.json — this project has zero runtime/dev dependencies (zero-build-
-      # step by design, see README), so there is nothing for `npm ci` to reproduce from a
-      # lockfile. Revisit this the moment an actual dependency is introduced: add a
-      # package-lock.json and switch to `npm ci` then, per this repo's own D8 convention.
-      - run: npm install
+      - run: npm ci
 
-      - run: npm test
-
-      - run: npm run check
+      # Unit/integration/security tests, syntax checks, and Mozilla's official add-on
+      # linter are all part of the single release gate.
+      - run: npm run verify
