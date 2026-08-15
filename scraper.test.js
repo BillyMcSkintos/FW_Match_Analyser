@@ -43,6 +43,22 @@ function makeTelemetryLine(minute, side, kind, val) {
   };
 }
 
+function makeTacticsLabel(labelText, homeText, awayText) {
+  const homeEl = { textContent: homeText };
+  const awayEl = { textContent: awayText };
+  return {
+    textContent: labelText,
+    parentElement: {
+      querySelector(sel) {
+        // Mirrors the class names in the supplied saved FinalWhistle match page.
+        if (sel === '.text-end.fw-semibold, .text-end.tactic-side') return homeEl;
+        if (sel === '.text-start.fw-semibold, .text-start.tactic-side') return awayEl;
+        return null;
+      },
+    },
+  };
+}
+
 function makeStatsTable(rows) {
   // rows: [[home, label, away], ...] mirroring extractStatsTable's expected 3-cell shape.
   return {
@@ -55,7 +71,7 @@ function makeStatsTable(rows) {
   };
 }
 
-function loadScraperContext({ narrativeText, telemetryLines, teams, hasStats, statsRows }) {
+function loadScraperContext({ narrativeText, telemetryLines, teams, hasStats, statsRows, tacticsRows }) {
   const src = fs.readFileSync(path.join(__dirname, 'scraper.js'), 'utf8');
   // narrativeText: null means no matching element anywhere on the page at all — the
   // real NARRATIVE_NOT_FOUND scenario (the fast-forward button was never clicked).
@@ -75,6 +91,7 @@ function loadScraperContext({ narrativeText, telemetryLines, teams, hasStats, st
       body: { nodeType: ELEMENT_NODE, childNodes: bodyChildren },
       querySelectorAll(sel) {
         if (sel === 'h5 a.text-decoration-none') return teams.map(t => ({ textContent: t }));
+        if (sel === '.tactics-label') return (tacticsRows || []).map(r => makeTacticsLabel(...r));
         return [];
       },
       querySelector(sel) {
@@ -88,6 +105,16 @@ function loadScraperContext({ narrativeText, telemetryLines, teams, hasStats, st
   vm.runInContext(src, context, { filename: 'scraper.js' });
   return context;
 }
+
+test('scraper.js can be injected repeatedly into the same tab context', () => {
+  const ctx = loadScraperContext({ narrativeText: null, telemetryLines: null, teams: [], hasStats: false });
+  const src = fs.readFileSync(path.join(__dirname, 'scraper.js'), 'utf8');
+  assert.doesNotThrow(
+    () => vm.runInContext(src, ctx, { filename: 'scraper.js (second injection)' }),
+    'a second Scrape click must not redeclare top-level bindings',
+  );
+  assert.equal(typeof ctx.fwScrapeWithTelemetry, 'function');
+});
 
 test('a missing statistics table produces a warning, not a fatal error, and the scrape is still ok', () => {
   const ctx = loadScraperContext({
@@ -128,6 +155,45 @@ test('team-name extraction: first h5 link is home, second is away', () => {
   const result = ctx.fwScrape();
   assert.equal(result.homeTeam, 'Home Team');
   assert.equal(result.awayTeam, 'Away Team');
+});
+
+test('initial-tactics extraction reads all five rows from the live pre-match summary markup into enum-like tokens', () => {
+  const ctx = loadScraperContext({
+    narrativeText: 'Opportunity for Home Team.\n[0-0]\nMinute 5\nMidfield\n',
+    telemetryLines: [makeTelemetryLine(5, 'H', 'O_MID_START', null)],
+    teams: ['Home Team', 'Away Team'],
+    hasStats: false,
+    tacticsRows: [
+      ['Team Mentality', 'Normal', 'Attacking'],
+      ['Style of Play', 'Through balls', 'Short passes'],
+      ['Marking', 'Zone', 'Man to Man'],
+      ['Defence Focus', 'Normal', 'Normal'],
+      ['Preferred Side', 'Normal', 'Left/Right'],
+    ],
+  });
+  const result = ctx.fwScrape();
+  // result.initialTactics was built inside the vm context's own realm — assert.deepEqual
+  // treats cross-realm objects as never reference-equal even with identical own
+  // enumerable properties, so compare by value instead (same gotcha as elsewhere in this
+  // test suite).
+  assert.equal(JSON.stringify(result.initialTactics), JSON.stringify({
+    home: { mentality: 'NORMAL', style: 'THROUGH_BALLS', marking: 'ZONE', defenceFocus: 'NORMAL', preferredSide: 'NORMAL' },
+    away: { mentality: 'ATTACKING', style: 'SHORT_PASSES', marking: 'MAN_TO_MAN', defenceFocus: 'NORMAL', preferredSide: 'LEFT_RIGHT' },
+  }));
+  assert.equal(result.warnings.some(w => w.startsWith('INITIAL_TACTICS_NOT_FOUND')), false);
+});
+
+test('a missing initial-tactics summary produces a warning, not a fatal error', () => {
+  const ctx = loadScraperContext({
+    narrativeText: 'Opportunity for Home Team.\n[0-0]\nMinute 5\nMidfield\n',
+    telemetryLines: [makeTelemetryLine(5, 'H', 'O_MID_START', null)],
+    teams: ['Home Team', 'Away Team'],
+    hasStats: false,
+  });
+  const result = ctx.fwScrape();
+  assert.equal(result.ok, true, result.errors.join('; '));
+  assert.equal(result.initialTactics, null);
+  assert.ok(result.warnings.some(w => w.startsWith('INITIAL_TACTICS_NOT_FOUND')));
 });
 
 test('telemetry-line extraction builds "min\' - side - kind - (val)" tokens from the DOM', () => {

@@ -1,0 +1,24 @@
+10' - H - O_GK_START
+10' - H - V_PASS - (65)
+10' - A - V_ASSISTANCE - (55)
+10' - H - V_RECEPTION - (45)
+10' - A - V_TACKLING - (35)
+10' - H - V_PASS - (85)
+10' - A - V_ASSISTANCE - (35)
+10' - A - E_TRAP_SUCCESS
+10' - H - E_OFFSIDE
+90' - H - O_MID_START
+90' - H - V_PASS - (55)
+90' - A - V_ASSISTANCE - (35)
+90' - H - V_RECEPTION - (40)
+90' - A - V_TACKLING - (70)
+110' - A - O_DEF_START
+110' - A - V_PASS - (35)
+110' - H - V_ASSISTANCE - (65)
+110' - A - V_RECEPTION - (75)
+110' - H - V_TACKLING - (55)
+110' - A - V_PASS - (65)
+110' - H - V_ASSISTANCE - (35)
+110' - H - E_TRAP_FAILURE
+110' - A - V_RECEPTION - (75)
+110' - H - V_TACKLING - (85)

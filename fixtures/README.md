@@ -23,14 +23,18 @@ computes from it.
 **These are not verbatim scraped FinalWhistle match reports.** Every line here is
 adapted from, or copied verbatim out of, this project's own `parser.test.js` fixtures —
 which were themselves written against real observed FinalWhistle narrative/telemetry
-wording during Phase A/B/C development, not invented. Player names (`Player A`, `Player
-B`, ...) and team names (`Home Team`, `Away Team`) are placeholders; no real club,
-player, or account-specific data is included anywhere in this directory. Where a
-fixture combines lines from more than one `parser.test.js` test into a single scenario
-(e.g. `substitutions-position-change`), that combination is new, but the individual
-narrative construct wording (pass/duel/shot lines, "Issued order-" lines, tiredness/sub
-lines) is not — it is the same wording already exercised and asserted on elsewhere in
-this repo.
+wording, not invented. Player names (`Player A`, `Player B`, ...) and team names (`Home
+Team`, `Away Team`) are placeholders; no real club, player, or account-specific data is
+included anywhere in this directory. Where a fixture combines lines from more than one
+`parser.test.js` test into a single scenario (e.g. `substitutions-position-change`),
+that combination is new, but the individual narrative construct wording (pass/duel/shot
+lines, "Issued order-" lines, tiredness/sub lines) is not — it is the same wording
+already exercised and asserted on elsewhere in this repo.
+
+`extra-time-offside/` is adapted the same way, from parser.test.js's own offside/
+extra-time/preferred-side tests — which are themselves anonymized from a single real
+knockout-cup report that went to extra time (the first time this project encountered
+any of those three constructs; see CHANGELOG.md).
 
 No FinalWhistle manual text is reproduced in this directory.
 
@@ -49,3 +53,4 @@ No FinalWhistle manual text is reproduced in this directory.
 | `tactical-phase-transition/` | One opportunity before a mentality change, one after — tests `phasePerformance`'s per-phase opportunity attribution |
 | `degraded-alignment/` | Narrative opportunity with no matching telemetry at all — `validation.confidence` must read `'degraded'` and propagate into analytics confidence fields |
 | `zero-opportunities-team/` | Away Team never creates an opportunity but does appear via a tactical event — tactical phases must still exist for a team with zero opportunities |
+| `extra-time-offside/` | An offside trap that succeeds (flag ends the attack, `OFFSIDE` outcome) and one that fails (attack continues normally), a preferred-side order, and the two extra-time break markers landing with no `Opportunity for` line between them and the previous opportunity |

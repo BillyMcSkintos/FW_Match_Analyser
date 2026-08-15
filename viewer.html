@@ -27,6 +27,10 @@ select:disabled{opacity:.4}
 /* ── Banners ── */
 .err-banner{background:#1a0808;border-bottom:1px solid #5a1a1a;padding:6px 10px;font-size:13px;color:#ff8a80;flex-shrink:0}
 .warn-banner{background:#1a1500;border-bottom:1px solid #3a2e00;padding:4px 10px;font-size:12px;color:#d4b95a;flex-shrink:0}
+.warn-banner-row{display:flex;align-items:flex-start;gap:8px}
+.warn-messages{flex:1;min-width:0}
+.copy-diagnostics{padding:2px 7px;border-color:#6f5c18;color:#e8c468;font-size:11px;line-height:16px}
+.copy-diagnostics:hover{background:#2a2000;color:#ffe08a}
 .tag-warn{font-size:11px;padding:0 4px;border-radius:2px;background:#2a2000;color:#d4b95a;border:1px solid #3a2e00;font-weight:700}
 
 /* ── Meta bar ──
@@ -148,18 +152,19 @@ select:disabled{opacity:.4}
 /* Right padding reserves room for .right-overlay (Chain Detail + narrative) so the
    pitch centers in the space actually left over instead of sitting underneath it. */
 .pitch-wrap{position:relative;height:100%;width:100%;display:flex;align-items:center;justify-content:center;padding:12px;padding-right:400px}
-/* Chain Detail + narrative stack on the right, above the pitch — narrative sits below
-   Chain Detail rather than overlaying the opportunity list on the left. It grows with
-   its content instead of scrolling internally, so the pitch reserves space to its left
-   (via .pitch-wrap's padding) rather than centering underneath this column. */
-.right-overlay{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;width:380px;pointer-events:none}
-.pass-summary{background:rgba(4,9,18,.94);border:1px solid #1a2540;border-radius:6px;padding:8px 10px;width:100%;max-height:50%;overflow-y:auto;pointer-events:none;font-size:12px;flex-shrink:0}
+/* Chain Detail + narrative stack on the right, above the pitch. Pin it to both viewport
+   edges so the flex column has a real height; the narrative can then consume the
+   remaining room and scroll instead of growing past the clipped page boundary. */
+.right-overlay{position:absolute;top:10px;right:10px;bottom:10px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;width:380px;pointer-events:none}
+.pass-summary{background:rgba(4,9,18,.94);border:1px solid #1a2540;border-radius:6px;padding:8px 10px;width:100%;max-height:34%;overflow-y:auto;pointer-events:auto;font-size:12px;flex-shrink:0}
 .ps-title{font-size:10px;color:#8a9ab0;letter-spacing:2px;text-transform:uppercase;margin-bottom:5px;display:flex;justify-content:space-between}
 .ps-team{font-size:11px;letter-spacing:2px;text-transform:uppercase;padding:3px 0;border-bottom:1px solid}
 .ps-row{display:flex;align-items:center;gap:4px;padding:2px 0;border-bottom:1px solid #0a1525}
 .ps-route{font-size:12px;flex:1;white-space:nowrap}
 .ps-q{font-size:13px;font-weight:700;min-width:24px;text-align:right}
-.raw-panel{width:100%;border:1px solid #1a2540;border-radius:6px;background:rgba(5,11,20,.94);box-shadow:0 4px 12px rgba(0,0,0,.4);pointer-events:auto}
+.raw-panel{width:100%;min-height:0;flex:1;overflow-y:auto;border:1px solid #1a2540;border-radius:6px;background:rgba(5,11,20,.94);box-shadow:0 4px 12px rgba(0,0,0,.4);pointer-events:auto;scrollbar-width:thin;scrollbar-color:#2a3a5a transparent}
+.raw-panel::-webkit-scrollbar,.pass-summary::-webkit-scrollbar{width:5px}
+.raw-panel::-webkit-scrollbar-thumb,.pass-summary::-webkit-scrollbar-thumb{background:#2a3a5a;border-radius:3px}
 .raw-panel pre{font-family:monospace;font-size:13px;line-height:1.6;padding:10px 12px;color:#9fb0c4;white-space:pre-wrap;word-break:break-all}
 
 /* ── Raw/Tele panels ── */
@@ -197,8 +202,7 @@ select:disabled{opacity:.4}
     <div class="tabs" id="tabs" style="display:none">
       <div class="tab active" data-tab="opps">Opportunities</div>
       <div class="tab" data-tab="stats">Statistics</div>
-      <div class="tab" data-tab="phases">Phases</div>
-      <div class="tab" data-tab="squad">Squad</div>
+      <div class="tab" data-tab="squad">Tactics</div>
       <div class="tab" data-tab="analysis">Analysis</div>
       <div class="tab" data-tab="raw-narrative">Narrative</div>
       <div class="tab" data-tab="raw-telemetry">Telemetry</div>
@@ -222,7 +226,6 @@ select:disabled{opacity:.4}
       </div>
     </div>
     <div id="panel-stats" class="panel"><div class="no-data">No statistics.</div></div>
-    <div id="panel-phases" class="panel"><div class="no-data">No match data.</div></div>
     <div id="panel-squad" class="panel"><div class="no-data">No match data.</div></div>
     <div id="panel-analysis" class="panel"><div class="no-data">No match data.</div></div>
     <div id="panel-raw-narrative" class="panel"><div class="raw-box" id="raw-narrative-box"></div></div>

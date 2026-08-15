@@ -117,16 +117,22 @@ function buildStreamPhases(tokens) {
       case 'V_SHOT':       phase.values.shot        = tok.value; break;
       case 'V_REFLEX':     phase.values.gkSave      = tok.value; break;
       case 'E_CORNER': case 'E_FREE_KICK': case 'E_GOAL':
-      case 'E_BLOCK': case 'E_INTERCEPTION': case 'E_FUMBLE':
+      case 'E_BLOCK': case 'E_INTERCEPTION': case 'E_FUMBLE': case 'E_OFFSIDE':
         // Only flush if this phase actually has values — two terminal events can fire
         // back-to-back with nothing in between (e.g. a fumbled save immediately followed
-        // by the resulting corner), and flushing on both creates a phantom empty phase
-        // between them. Tag the event and let it merge into whichever phase (the one just
-        // closed, or the next one) actually has the values.
+        // by the resulting corner, or E_TRAP_SUCCESS immediately followed by E_OFFSIDE —
+        // see below), and flushing on both creates a phantom empty phase between them.
+        // Tag the event and let it merge into whichever phase (the one just closed, or
+        // the next one) actually has the values.
         phase.events.push(tok.kind);
         if (Object.keys(phase.values).length) flush();
         break;
       case 'E_CARD': case 'E_PENALTY_KICK': case 'E_INJURY': phase.events.push(tok.kind); break;
+      // E_TRAP_SUCCESS always immediately precedes the E_OFFSIDE that actually ends the
+      // phase (handled above) — not terminal by itself. E_TRAP_FAILURE means the attack
+      // continues normally (more V_RECEPTION/V_TACKLING/V_SHOT tokens follow in this same
+      // phase) — flushing on it would prematurely split an ongoing duel's values in two.
+      case 'E_TRAP_SUCCESS': case 'E_TRAP_FAILURE': phase.events.push(tok.kind); break;
       default:
         // C_* tokens are tactical/coaching metadata (subs, player orders, moves) that
         // can trail after a phase-ending event — not gameplay, so they must not be
@@ -159,35 +165,37 @@ function buildStreamPhases(tokens) {
 // adding/removing a tactical construct.
 //
 // OBSERVED — real "Issued order-"/admin lines this parser matches today:
-//   SUBSTITUTION, POSITION_CHANGE, MENTALITY_CHANGE, ISOLATE, TIREDNESS, INJURY,
-//   HALF_TIME. Of these, SUBSTITUTION/POSITION_CHANGE/TIREDNESS/HALF_TIME have direct
-//   fixture coverage (parser.test.js); MENTALITY_CHANGE/ISOLATE/INJURY do not — the
-//   regex was written against manual terminology and has no confirmed real-report
-//   fixture behind it yet. Not removed (nothing has ever demonstrated it wrong), but
-//   flagged rather than presented as fixture-proven.
+//   SUBSTITUTION, POSITION_CHANGE, MENTALITY_CHANGE, PREFERRED_SIDE_CHANGE, ISOLATE,
+//   TIREDNESS, INJURY, HALF_TIME, EXTRA_TIME_BREAK (a knockout-cup fixture that didn't
+//   resolve in regulation; the report marks both the move into extra time and the
+//   changeover between its two halves — treated the same as HALF_TIME for tiredness
+//   reset, since the source text says "rest a bit" at both). Of these,
+//   SUBSTITUTION/POSITION_CHANGE/TIREDNESS/HALF_TIME/PREFERRED_SIDE_CHANGE/
+//   EXTRA_TIME_BREAK have direct fixture coverage (parser.test.js);
+//   MENTALITY_CHANGE/ISOLATE/INJURY do not — the regex was written against manual
+//   terminology and has no confirmed real-report fixture behind it yet. Not removed
+//   (nothing has ever demonstrated it wrong), but flagged rather than presented as
+//   fixture-proven.
 //
-// AMBIGUOUS — STYLE_CHANGE: the matched line is "Issued order- Change (middle )?order
-//   to X", which was assumed to mean the manual's team-wide "Style of Play" (Flexible /
-//   Creative Play / Pressing / Short Passes / Through Balls / Counter Attack / Long
-//   Balls). But the manual separately defines per-zone "Player Orders" ("At this moment
-//   only zone base orders are in use... MF player uses only midfield orders"), and
-//   "middle order" reads at least as naturally as a MIDFIELD-zone player order as it
-//   does a team-wide style change. No fixture or manual match-report example
-//   disambiguates this. The event `type` stays STYLE_CHANGE, unchanged, for backwards
-//   compatibility (viewer.js keys off the exact string) — but the ambiguity is NOT
-//   allowed to leak into tacticalStateAt's output: the observed value is written to
-//   teamState.middleOrder, a deliberately neutral field, and teamState.style is left
-//   permanently null. Every STYLE_CHANGE event also carries semanticType:
-//   'MIDDLE_ORDER_CHANGE' and interpretation: 'ambiguous' so a consumer can see the
-//   epistemic status without needing to have read this comment. This exists specifically
-//   so analytics.js can never end up comparing "Short Passes vs Long Balls" against a
-//   value the source may not have actually meant.
+// Offside Trap is OBSERVED too, but not as a tacticalEvents entry — "Offside trap was
+// attempted by the defense team." / "Assistant referee signaled the offside flag." are
+// in-play narrative text describing what happened during a specific pass, the same kind
+// of thing a tackle or a save is, not a manager-issued order. It's modeled as a new
+// terminal step outcome (OFFSIDE, added to TERMINAL_OUTCOMES) instead: the trap-attempt
+// line itself carries no state (matching the "Penalty"/"Long Shot Goal Attempt"
+// bare-marker convention), and only the flag actually ends the phase.
+//
+// OBSERVED — STYLE_CHANGE: FinalWhistle reports a Style of Play change as
+//   "Issued order- Change (middle )?order to X". Despite the shortened source wording,
+//   the product term is Style of Play, so the event updates teamState.style. Do not
+//   expose or invent a separate "Middle Order" tactic — FinalWhistle has no such main
+//   team-tactic label.
 //
 // MANUAL-DEFINED, NOT OBSERVED — real FW mechanics per the manual with no narrative
 //   construct parsed for them anywhere in this codebase, and no fixture/report evidence
 //   they're even exposed as narrative text (as opposed to only being visible on the
-//   tactics-setup page): Marking (Zonal/Man to Man), Defence Focus, Preferred Side,
-//   Offside Trap, zone-based Player Orders (Attacker: Normal/Quick Shot/Power Shot/
+//   tactics-setup page): Marking (Zonal/Man to Man), Defence Focus, zone-based Player
+//   Orders (Attacker: Normal/Quick Shot/Power Shot/
 //   Heading Shot/Lob Shot/Demand High/Demand Low; Midfielder: Normal/Safe Pass/Risky
 //   Pass/Deflect Pass/Long Shot/Dribble 'n' Pass/Dribble 'n' Shoot; Defence: Normal/
 //   Aerial Control/Ground Control/Sliding Tackle; Goalkeeper: Normal/Interceptor/Sure
@@ -215,8 +223,9 @@ function parseNarrative(narrativeText) {
   // 'player' when the event's payload is fundamentally about one (or two) named players
   // (a sub, a position move, tiredness, an injury) even though a sub/position change also
   // has team-wide phase-triggering consequences (see buildTacticalPhases); 'team' for a
-  // team-wide order (mentality, style, a special order like isolate); 'match' for
-  // whole-match markers (half time) that belong to neither side.
+  // team-wide order (mentality, style, preferred side, a special order like isolate);
+  // 'match' for whole-match markers (half time, an extra-time break) that belong to
+  // neither side.
   const mkEvent = (type, scope, fields, rawText) => {
     const s = nextSeq();
     return { id: `${type}-${minute ?? 'x'}-${s}`, sequence: s, minute, type, scope,
@@ -275,6 +284,19 @@ function parseNarrative(narrativeText) {
     if (/Half Time/.test(line))                    { tactics.push(mkEvent('HALF_TIME', 'match', {}, line)); continue; }
     if (/referee blew the final whistle/.test(line)) continue;
 
+    // Extra time: only appears when the match didn't resolve in regulation (a knockout-
+    // cup fixture, per the one real report this was observed in). Both markers are
+    // matched here, at admin level, specifically so they're consumed BEFORE the
+    // phase-content section below ever sees them — currentPhase/currentOpp are only
+    // reset by flushOpp() at the NEXT "Opportunity for" line, so a stray admin line
+    // landing between an opportunity's score bracket and the following one would
+    // otherwise be tested against a stale, already-finished phase and misfiled as
+    // unrecognized phase content instead of being recognized here.
+    if (/^The referee whistled and marked the end of regular play\./.test(line))
+      { tactics.push(mkEvent('EXTRA_TIME_BREAK', 'match', { period: 'start' }, line)); continue; }
+    if (/^End of first extra time, players will change sides/.test(line))
+      { tactics.push(mkEvent('EXTRA_TIME_BREAK', 'match', { period: 'halfway' }, line)); continue; }
+
     if ((m = line.match(/^(.+?) - (.+?) \[([A-Z]+)\] looks (very tired|tired)\.$/)))
       { tactics.push(mkEvent('TIREDNESS', 'player', { team: m[1].trim(),
           player: { name: m[2].trim(), position: m[3] },
@@ -304,12 +326,9 @@ function parseNarrative(narrativeText) {
       else if ((m = line.match(/Issued order- Change mentality to ([A-Z_]+)$/)))
         tactics.push(mkEvent('MENTALITY_CHANGE', 'team', { team, mentality: m[1] }, line));
       else if ((m = line.match(/Issued order- Change (?:middle )?order to ([A-Z_]+)$/)))
-        // `type` stays STYLE_CHANGE for backwards compatibility (viewer.js keys off this
-        // exact string in several places) — semanticType/interpretation carry the actual
-        // epistemic status honestly without a breaking rename. See initialTeamState's
-        // comment: this value is applied to teamState.middleOrder, never teamState.style.
-        tactics.push(mkEvent('STYLE_CHANGE', 'team', { team, style: m[1],
-          semanticType: 'MIDDLE_ORDER_CHANGE', interpretation: 'ambiguous' }, line));
+        tactics.push(mkEvent('STYLE_CHANGE', 'team', { team, style: m[1] }, line));
+      else if ((m = line.match(/Issued order- Change preferred side to ([A-Z_]+)$/)))
+        tactics.push(mkEvent('PREFERRED_SIDE_CHANGE', 'team', { team, preferredSide: m[1] }, line));
       continue;
     }
 
@@ -356,6 +375,17 @@ function parseNarrative(narrativeText) {
       continue;
     }
 
+    // Requested pass modifier — FinalWhistle emits this immediately before the normal
+    // "attempted ... pass" line when the player is asked to use a favored/unfavored
+    // delivery. Preserve the observation on the pass step; it is context, not another
+    // phase and not evidence that any particular team tactic was active.
+    if ((m = line.match(/^(.+?) \[([A-Z]+)\] was requested to send (favored|unfavored) (low|high) pass\.$/))) {
+      currentPhase.passRequest = {
+        player: player(m[1], m[2]), preference: m[3], height: m[4],
+      };
+      continue;
+    }
+
     // Pass line — "attempted" for open-play MID/PB passes, "made" for corner/free-kick restarts
     if ((m = line.match(/^(.+?) \[([A-Z]+)\] (?:attempted|made) (low|high) \w+(?: (\w+))? pass to (.+?) \[([A-Z]+)\]$/))) {
       currentPhase.passer     = player(m[1], m[2]);
@@ -367,6 +397,20 @@ function parseNarrative(narrativeText) {
     // Assistance line (defender positioning)
     if ((m = line.match(/^(.+?) \[([A-Z]+)\] got \w+ assistance, and was .+\.$/))) {
       currentPhase.defender = player(m[1], m[2]); continue;
+    }
+
+    // Offside trap: the defense line holds instead of engaging in a duel. A trap attempt
+    // doesn't by itself determine the outcome — it's followed either by the assistant
+    // referee's flag (this phase's outcome, below) or by the attack simply continuing
+    // (reception/tackle lines as normal) if the trap failed — so the marker line itself
+    // carries no state, matching the "Penalty"/"Long Shot Goal Attempt" bare-marker
+    // convention already used elsewhere in this section.
+    if (/^Offside trap was attempted by the defense team\.$/.test(line)) continue;
+    // The flag ends the passage of play outright — no reception/tackle/shot ever
+    // follows it, the opportunity's score bracket comes right after.
+    if (/^Assistant referee signaled the offside flag\.$/.test(line)) {
+      if (!TERMINAL_OUTCOMES.has(currentPhase.outcome)) currentPhase.outcome = 'OFFSIDE';
+      continue;
     }
 
     // Reception + tackle (already captured above)
@@ -502,8 +546,8 @@ function parseNarrative(narrativeText) {
     // control" aftermath text can't quietly relabel the shot itself as merely cleared.
     if (/bounced the ball back|could not handle the ball/.test(line)) { currentPhase.outcome = 'FUMBLED'; continue; }
 
-    // Post
-    if (/bounced off the post/.test(line)) { currentPhase.outcome = 'POST'; continue; }
+    // Woodwork — both post and crossbar use the existing POST outcome/category.
+    if (/bounced off the (?:post|bar)/i.test(line)) { currentPhase.outcome = 'POST'; continue; }
 
     // Missed wide
     if (/Missed the goal wide/.test(line)) { currentPhase.outcome = 'MISSED'; continue; }
@@ -540,7 +584,7 @@ function parseNarrative(narrativeText) {
 // Outcomes that represent how a passage of play actually ended — once one of these is
 // set, later "cleared the ball to safety" / "took control" aftermath lines describing
 // what happened to the loose ball afterward must not downgrade/overwrite it.
-const TERMINAL_OUTCOMES = new Set(['GOAL','SAVED','FUMBLED','POST','MISSED','BLOCKED','SHOT_BLOCKED','FOUL','CORNER','GK_INTERCEPT']);
+const TERMINAL_OUTCOMES = new Set(['GOAL','SAVED','FUMBLED','POST','MISSED','BLOCKED','SHOT_BLOCKED','FOUL','CORNER','GK_INTERCEPT','OFFSIDE']);
 
 function player(name, position) { return { name: name.trim(), position }; }
 function parsePlayerToken(str) {
@@ -580,6 +624,7 @@ function passDuelShotSteps(mk, phase, sv, isPenalty, passStepType, duelStepType)
     to:         phase.target,
     passType:   phase.passType,
     passHeight: phase.passHeight,
+    passRequest: phase.passRequest || null,
     values:     { pass: qv(sv.pass ?? null) },
     outcome:    null,
   }));
@@ -639,6 +684,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
         to:          phase.target,
         passType:    phase.passType,
         passHeight:  phase.passHeight,
+        passRequest: phase.passRequest || null,
         values:      { pass: qv(sv.pass ?? null) },
         outcome:     null,
       }));
@@ -741,6 +787,7 @@ function assignSides(phases, attackTeam, attackSide, defendTeam, defendSide) {
     const ds = p.isCA ? attackSide : defendSide;
     const stamp = (pl, team, side) => pl && (pl.team = team, pl.side = side);
     stamp(p.passer,  at, as); stamp(p.target,  at, as); stamp(p.shotTaker, at, as);
+    stamp(p.passRequest?.player, at, as);
     stamp(p.defender, dt, ds); stamp(p.blockRecovery, dt, ds);
     if (p.gkPlayer) { p.gkPlayer.team = dt; p.gkPlayer.side = ds; }
     // Carried onto every step built from this phase (see phaseToSteps's mk()) so the
@@ -851,18 +898,17 @@ function buildPlayerRegistry(opportunities, tacticalEvents) {
 // separately from `players` at query time so a DERIVED value never sits inside the same
 // object as fields that are purely OBSERVED-via-events, keeping the OBSERVED/DERIVED
 // distinction visible in the shape of the data, not just in a comment.
-// `style` vs `middleOrder`: STYLE_CHANGE's source line ("Issued order- Change (middle )?
-// order to X") is ambiguous between the manual's team-wide Style of Play and a per-zone
-// Player Order (see the tactical-construct audit comment above parseNarrative) — nothing establishes
-// which one it actually is. `style` therefore stays permanently null; the observed value
-// is written to the neutral `middleOrder` field instead by tacticalStateAt. `style`
-// stays in this shape only so a future confirmed Style-of-Play source has somewhere to
-// go without a further schema change — it is never populated by STYLE_CHANGE today, and
-// nothing should read it as if it means anything until it is.
-function initialTeamState() {
+// The five main tactics are seeded from the match page's pre-match summary. Mentality,
+// Style of Play, and Preferred Side then update from their observed narrative events;
+// marking and defence focus have no narrative-observed change event at all yet, so the
+// kickoff value is the only thing this parser can ever say about them for the whole
+// match — which is still strictly more honest than showing null throughout.
+function initialTeamState(seed) {
   return {
-    mentality: null, style: null, middleOrder: null, marking: null, defenceFocus: null,
-    preferredSide: null, offside: null, playerOrders: null, aggression: null, arrows: null,
+    mentality: seed?.mentality ?? null, style: seed?.style ?? null,
+    marking: seed?.marking ?? null, defenceFocus: seed?.defenceFocus ?? null,
+    preferredSide: seed?.preferredSide ?? null,
+    offside: null, playerOrders: null, aggression: null, arrows: null,
     // isolate: zone-sensitive per the manual ("Isolate player (Penalty Box & Midfield)"),
     // but the narrative line ("Isolate Player - X [POS]") never names a zone — only the
     // target player — so `zone` stays null rather than guessed as PB/Midfield/both. An
@@ -940,7 +986,7 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
 
   const applied = relevant.filter(isBefore).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
 
-  const teamState = initialTeamState();
+  const teamState = initialTeamState(match?.meta?.initialTactics?.[teamSide]);
   const players = {};
   const ensurePlayer = (p) => {
     if (!p?.name) return null;
@@ -954,12 +1000,7 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
       case 'MENTALITY_CHANGE':
         teamState.mentality = ev.mentality; break;
       case 'STYLE_CHANGE':
-        // Deliberately NOT teamState.style — see initialTeamState's comment. Writing an
-        // unresolved-mechanic event into a field literally named `style` would let a
-        // later consumer (analytics.js) compare "Short Passes vs Long Balls" when the
-        // source may actually have said something else entirely (a per-zone player order).
-        // `middleOrder` is the honest, neutral name for "value observed in this line".
-        teamState.middleOrder = ev.style; break;
+        teamState.style = ev.style; break;
       case 'ISOLATE':
         // Special Order set by the issuing team, targeting an OPPONENT player (per the
         // manual's Conditional Orders section: "Then Isolate - isolate one of the
@@ -971,6 +1012,8 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
         teamState.specialOrders = { ...teamState.specialOrders,
           isolate: [{ player: ev.target || null, zone: null }] };
         break;
+      case 'PREFERRED_SIDE_CHANGE':
+        teamState.preferredSide = ev.preferredSide; break;
       case 'SUBSTITUTION': {
         const out = ensurePlayer(ev.playerOut);
         if (out) out.onPitch = false;
@@ -1000,10 +1043,11 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
         break;
       }
       case 'HALF_TIME':
-        // Same rule already established by viewer.js's playerStatusAt: a first-half
-        // tiredness report doesn't carry into the second half (no way to reconstruct the
-        // Constitution half-time recovery bonus without hidden CO state), but injuries
-        // persist — FinalWhistle injuries don't heal at the break.
+      case 'EXTRA_TIME_BREAK':
+        // Same rule already established by viewer.js's playerStatusAt: a tiredness report
+        // doesn't carry across a break where players "rest a bit" (no way to reconstruct
+        // the Constitution recovery bonus without hidden CO state), but injuries persist —
+        // FinalWhistle injuries don't heal at any break, half time or extra time alike.
         for (const name of Object.keys(players)) players[name].tiredness = null;
         break;
     }
@@ -1016,13 +1060,13 @@ function tacticalStateAt(match, teamSide, minute, sequence) {
 }
 
 // A new tactical phase begins only on a MATERIAL state change for `teamSide` —
-// mentality, style, a substitution, a position change, or an isolate order (the only
-// change types this file observes at all; see the tactical-construct audit comment
-// above parseNarrative for what's deliberately excluded). An opportunity, a shot, a
-// tiredness report, or a score change never splits a phase on its own — they're still
-// readable as context via tacticalStateAt for any minute inside whichever phase they
-// fall in.
-const PHASE_TRIGGER_TYPES = new Set(['MENTALITY_CHANGE', 'STYLE_CHANGE', 'SUBSTITUTION', 'POSITION_CHANGE', 'ISOLATE']);
+// mentality, style, a substitution, a position change, an isolate order, or a preferred
+// side change (the only change types this file observes at all; see the
+// tactical-construct audit comment above parseNarrative for what's deliberately
+// excluded). An opportunity, a shot, a tiredness report, or a score change never splits
+// a phase on its own — they're still readable as context via tacticalStateAt for any
+// minute inside whichever phase they fall in.
+const PHASE_TRIGGER_TYPES = new Set(['MENTALITY_CHANGE', 'STYLE_CHANGE', 'SUBSTITUTION', 'POSITION_CHANGE', 'ISOLATE', 'PREFERRED_SIDE_CHANGE']);
 
 function buildTacticalPhases(match, teamSide) {
   const triggers = (match?.tacticalEvents || [])
@@ -1088,10 +1132,17 @@ function phaseIdAt(phases, sequence) {
 /**
  * @param {string} streamText
  * @param {string} narrativeText
- * @param {{homeTeam?: string, awayTeam?: string}} [meta] — trusted scrape metadata (the
- *   site's own team-name elements). Authoritative when both are provided; without it, team
- *   identity falls back to matching narrative opportunities against stream attacking sides,
- *   which has no way to resolve a team that never had a single matched opportunity.
+ * @param {{homeTeam?: string, awayTeam?: string, initialTactics?: {home: object, away: object}}} [meta]
+ *   — trusted scrape metadata (the site's own DOM elements, not narrative/telemetry text).
+ *   homeTeam/awayTeam: authoritative when both are provided; without them, team identity
+ *   falls back to matching narrative opportunities against stream attacking sides, which
+ *   has no way to resolve a team that never had a single matched opportunity.
+ *   initialTactics: each side's pre-match mentality/style/marking/defenceFocus/
+ *   preferredSide, scraped from the match page's own summary card (see scraper.js) — the
+ *   narrative/telemetry streams only ever report CHANGES, never a starting value, so this
+ *   is the only source for what a team's settings actually were at kickoff. Seeds
+ *   initialTeamState() via tacticalStateAt; see that function's own comment for which
+ *   fields then keep updating from narrative events and which stay frozen at this value.
  */
 function parseMatch(streamText, narrativeText, meta) {
   const warnings = [];
@@ -1248,7 +1299,7 @@ function parseMatch(streamText, narrativeText, meta) {
   // id) in force for both its own team and the opponent at the moment it happened — keyed
   // by narrative sequence, not minute, for the same reason annotateScores keys scores
   // that way.
-  const phaseSource = { tacticalEvents };
+  const phaseSource = { tacticalEvents, meta: { initialTactics: meta?.initialTactics || null } };
   const tacticalPhases = {
     home: buildTacticalPhases(phaseSource, 'home'),
     away: buildTacticalPhases(phaseSource, 'away'),
@@ -1314,8 +1365,8 @@ function parseMatch(streamText, narrativeText, meta) {
   if (unresolvedTacticalEvents.length)
     warnings.push(`${unresolvedTacticalEvents.length} tactical event(s) could not be attributed to a side — the named player wasn't observed anywhere else in the match. Partial tactical state.`);
 
-  return { meta: { homeTeam, awayTeam, finalScore }, playerRegistry, opportunities,
-           tacticalEvents, tacticalPhases, warnings, validation };
+  return { meta: { homeTeam, awayTeam, finalScore, initialTactics: meta?.initialTactics || null },
+           playerRegistry, opportunities, tacticalEvents, tacticalPhases, warnings, validation };
 }
 
 if (typeof module !== 'undefined' && module.exports) {

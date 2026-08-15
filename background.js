@@ -105,6 +105,7 @@ const SCRAPE_LIMITS = Object.freeze({
   statisticValueChars: 80,
   messages: 100,
   messageChars: 2_000,
+  tacticValueChars: 40,
 });
 
 function isPlainRecord(value) {
@@ -137,6 +138,25 @@ function sanitizedStatistics(value) {
   return Object.keys(clean).length ? clean : null;
 }
 
+// Only the field names parser.js's initialTeamState() actually knows how to seed —
+// anything else scraper.js might one day add here would otherwise pass through
+// unbounded and unvalidated.
+const INITIAL_TACTIC_FIELDS = ['mentality', 'style', 'marking', 'defenceFocus', 'preferredSide'];
+function sanitizedTacticSide(value) {
+  if (!isPlainRecord(value)) return null;
+  const clean = {};
+  for (const field of INITIAL_TACTIC_FIELDS) {
+    if (typeof value[field] === 'string') clean[field] = value[field].slice(0, SCRAPE_LIMITS.tacticValueChars);
+  }
+  return clean;
+}
+function sanitizedInitialTactics(value) {
+  if (!isPlainRecord(value)) return null;
+  const home = sanitizedTacticSide(value.home);
+  const away = sanitizedTacticSide(value.away);
+  return (home || away) ? { home: home || {}, away: away || {} } : null;
+}
+
 function sanitizeScrapeResult(value) {
   if (!isPlainRecord(value)) return null;
   if (value.narrative != null && typeof value.narrative !== 'string') return null;
@@ -167,6 +187,7 @@ function sanitizeScrapeResult(value) {
     narrative,
     telemetry,
     statistics: sanitizedStatistics(value.statistics),
+    initialTactics: sanitizedInitialTactics(value.initialTactics),
     homeTeam,
     awayTeam,
     url: typeof value.url === 'string' ? value.url : null,

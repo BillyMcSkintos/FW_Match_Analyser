@@ -14,22 +14,28 @@ statistics views.
 ## Features
 
 - **Opportunities** — every attacking sequence as a clickable list, with a pitch
-  diagram tracing the actual pass/duel/shot chain (click a row to pin it).
+  diagram tracing the actual pass/duel/shot chain (click a row to pin it). Recovered
+  counter-attacks keep an earlier blocked pass as subdued context while emphasizing the
+  route that continued, and the selected opportunity's complete narrative scrolls beside
+  the pitch.
 - **Match timeline** — a 0–90′ strip above the list with one marker per
   opportunity; goals are unmistakable, clicking a marker jumps to it wherever
   you are in the app.
 - **Statistics** — shot/pass type breakdowns, long-ball summary, delivery to
   forwards, and an offense-vs-defense scatter.
-- **Phases** — opportunities/shots/goals/possession share across four fixed match
-  windows (0–30′, 30–45′, 45–70′, 70–90′).
-- **Squad** — tiredness reports, substitutions, position changes, mentality/style
-  orders, and a per-team **Tactical Phases** timeline (dynamic phases that begin only
-  on a material tactical-state change, not on a fixed clock).
+- **Tactics** — the five main team tactics scraped at kickoff and shown for each dynamic
+  tactical phase, plus tiredness, substitutions, position changes, and observed tactic
+  orders. A new phase begins only on a material tactical-state change, not on a fixed
+  clock. This replaced the earlier fixed-window Phases tab, which could not faithfully
+  represent extra time.
 - **Analysis** — opportunity funnel (where attacks actually stall: midfield, the box,
   the shot itself), a tactical-phase comparison table, and a defensive breakdown of
   conceded shots with the earliest duel the attacker won outright.
 - **Narrative / Telemetry** — the raw scraped text, color-coded by quality
   tier and team, with the same timeline linking into it.
+- **Issue-ready diagnostics** — parser warnings include a one-click **Copy diagnostics**
+  action containing the match URL, extension version, validation details, exact unknown
+  lines, and a small surrounding narrative window for a focused GitHub issue.
 - **JPG export** — save the current pitch view, a single pinned possession, or a
   whole-match overview as a local JPG. Built as a self-contained SVG from
   already-parsed match data (no page screenshot, no external image/font
@@ -120,7 +126,8 @@ row to preview it on the pitch, click to pin that view, click a timeline
 marker to jump straight to any moment in the match. Pick a scope from the
 export dropdown (**Full view** / **Pinned possession** / **Overview**) and
 click **Save JPG** to download a local snapshot — the pinned-possession scope
-needs a possession clicked first.
+needs a possession clicked first. If a warning appears, **Copy diagnostics** produces
+an issue-ready report without copying the complete match narrative.
 
 ## Architecture
 
@@ -129,7 +136,7 @@ FinalWhistle match page
         │  DOM read (injected on demand)
         ▼
    scraper.js  ──────────────  raw scrape payload
-        │                      {narrative, telemetry, statistics,
+        │                      {narrative, telemetry, statistics, initialTactics,
         │                       homeTeam, awayTeam, errors, warnings}
         ▼
    parser.js   ──────────────  trusted match model
@@ -158,6 +165,11 @@ happened once already; `smoke.test.js` now loads every script `viewer.html` refe
 in that exact order, into one shared context specifically to catch it again if it ever
 recurs.
 
+`scraper.js` is also a classic script, but it is injected into the same match tab again
+on every **Scrape** click. Its only top-level data bindings are intentionally
+redeclared safely, and `scraper.test.js` evaluates the whole file twice in one shared
+tab-like context to prevent repeat-scrape declaration failures.
+
 ## Development
 
 No build step — the extension runs directly from source, no bundler, framework, or
@@ -177,7 +189,7 @@ npm run verify # both of the above — run this before opening a PR
 | `analytics.js` | Match model → derived tactical analysis (opportunity funnel, turnovers, defensive failure chains, tactical-phase performance, player/GK/set-piece/shot/pass profiles). Pure — no DOM, no `chrome.*`. See the file header for the evidence-category convention every function follows. |
 | `viewer.js` | Renders the whole UI from a parsed match + its analysis — pitch, timeline, list, and tabs. See the file header for a section map. |
 | `viewer.html` | Markup + styling for the viewer page; also the canonical script-load order (`utils.js`, `parser.js`, `analytics.js`, `viewer.js`) that `smoke.test.js` derives its check from. |
-| `scraper.js` | FinalWhistle DOM → raw scrape payload. Injected into the page tab on demand. |
+| `scraper.js` | FinalWhistle DOM → raw scrape payload, including the five kickoff tactics. Injected into the page tab on demand and safe to inject repeatedly. |
 | `background.js` | Extension lifecycle — toolbar click handling, tab selection, script injection, `chrome.storage.local` persistence. |
 | `utils.js` | Genuinely shared small utilities only (used by both `background.js` and `viewer.js`) — not a general dumping ground. |
 | `fixtures/` | Sanitized narrative/telemetry/expected-invariant fixtures used by `integration.test.js`; see `fixtures/README.md` for scenario coverage and provenance. |

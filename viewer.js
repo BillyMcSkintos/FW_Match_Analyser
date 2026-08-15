@@ -4,9 +4,9 @@
  * FinalWhistle Match Analyser — viewer
  *
  * Renders the extension's UI from a parsed match (see parser.js): the pitch
- * visualization, opportunity list, match timeline, and the Statistics/Phases/Squad/
- * Analysis/Narrative/Telemetry tabs, plus a local JPG export. Single file, no build
- * step. Sections below run roughly outside-in — small drawing helpers first, then the
+ * visualization, opportunity list, match timeline, and the Statistics/Tactics/Analysis/
+ * Narrative/Telemetry tabs, plus a local JPG export. Single file, no build step.
+ * Sections below run roughly outside-in — small drawing helpers first, then the
  * top-level render() that wires a scrape result to the whole page, then interaction
  * wiring at the bottom:
  *
@@ -19,7 +19,9 @@
  *   TACTICAL EVENTS             – opportunity detail panels
  *   MATCH TIMELINE              – the 0–90' marker strip above the opportunity list
  *   OPPORTUNITY LIST RENDERING  – the scrollable list of opportunity rows
- *   STATS PANEL / PHASES / SQUAD – the other tab bodies
+ *   STATS PANEL / TACTICS       – the other tab bodies (GAME PHASES below STATS PANEL is
+ *                                 computational only — computePhaseStats now backs just
+ *                                 the JPG export, not a viewer tab)
  *   ANALYSIS TAB                – pure rendering over analytics.js's plain data
  *   MAIN RENDER                 – render(scrape): parse + populate every panel
  *   HOVER / CLICK INTERACTIONS  – preview-on-hover, pin-on-click, timeline sync
@@ -250,8 +252,26 @@ function stepsToChain(opp) {
   const pool  = isCA ? steps.filter(s => s.isCA) : steps;
   const find  = type => pool.find(s => s.stepType === type);
 
-  const startPass = find('START_PASS');
-  const midDuel   = find('MID_DUEL');
+  // A blocked pass can create another START_PASS/MID_DUEL pair inside the same
+  // opportunity (the loose ball is recovered and play continues). Using the first pair
+  // made the pitch stop at the block even when the recovered route later produced a
+  // goal. Pair each start pass with its following duel, then use the last pair that
+  // actually advanced as the main route. Earlier failed attempts remain available as
+  // subdued context on the pitch.
+  const midPairs = [];
+  for (let i = 0; i < pool.length; i++) {
+    if (pool[i].stepType !== 'START_PASS') continue;
+    let duel = null;
+    for (let j = i + 1; j < pool.length && pool[j].stepType !== 'START_PASS'; j++) {
+      if (pool[j].stepType === 'MID_DUEL') { duel = pool[j]; break; }
+    }
+    midPairs.push({ pass: pool[i], duel });
+  }
+  const advancedPair = [...midPairs].reverse().find(pair =>
+    ['POSSESSION', 'WON'].includes(pair.duel?.outcome));
+  const primaryMidPair = advancedPair || midPairs[midPairs.length - 1] || null;
+  const startPass = primaryMidPair?.pass || find('START_PASS');
+  const midDuel   = primaryMidPair?.duel || find('MID_DUEL');
   const pbPass    = find('PB_PASS');
   const pbDuel    = find('PB_DUEL');
   const shot      = find('SHOT');
@@ -317,6 +337,14 @@ function stepsToChain(opp) {
     isPenalty: effectiveShot?.isPenalty || false,
     directShot,
     isLongBallSequence,
+    earlierFailedPasses: midPairs
+      .filter(pair => pair !== primaryMidPair && !['POSSESSION', 'WON'].includes(pair.duel?.outcome))
+      .map(pair => ({
+        from: pair.pass?.from?.position || null,
+        to: pair.pass?.to?.position || pair.duel?.attacker?.position || null,
+        defender: pair.duel?.defender?.position || null,
+        outcome: pair.duel?.outcome || 'BLOCKED',
+      })),
   };
 }
 
@@ -470,10 +498,13 @@ function gLine(x1,y1,x2,y2,col,label,pct=.5,dashed=false) {
     // ball actually moved through this stage of the chain (pass, interception, shot, ...).
     arrowHead(x1, y1, x2, y2, col, .85, 2),
   ];
-  if (label) s.push(
-    `<rect x="${mx-14}" y="${my-7}" width="28" height="14" rx="2" fill="#030a14" opacity=".9"/>`,
-    `<text x="${mx}" y="${my}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="9" font-family="monospace" opacity=".9">${label}</text>`
-  );
+  if (label) {
+    const labelWidth = Math.max(28, String(label).length * 6 + 8);
+    s.push(
+      `<rect x="${mx-labelWidth/2}" y="${my-7}" width="${labelWidth}" height="14" rx="2" fill="#030a14" opacity=".9"/>`,
+      `<text x="${mx}" y="${my}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="9" font-family="monospace" opacity=".9">${escapeHtml(label)}</text>`
+    );
+  }
   return s.join('');
 }
 
@@ -519,6 +550,20 @@ function renderHighlightChain(opp) {
     const bx = side === 'home' ? VX.left - 8 : OVX.right + 8;
     s.push(`<rect x="${bx-15}" y="${Y.start-9}" width="30" height="18" rx="3" fill="#030a14" opacity=".92" stroke="${col}" stroke-width="1"/>`);
     s.push(`<text x="${bx}" y="${Y.start}" text-anchor="middle" dominant-baseline="central" fill="${col}" font-size="9" font-family="monospace" font-weight="bold" letter-spacing="1">CA</text>`);
+  }
+
+  // Preserve a blocked/failed attempt that preceded a recovered successful route. It is
+  // intentionally quieter than the primary chain, but still explains why the next pass
+  // begins from a different player after a loose-ball recovery.
+  for (const failed of c.earlierFailedPasses || []) {
+    if (!failed.from || !failed.to) continue;
+    const from = pXY(failed.from, side);
+    const to = nudgedXY(failed.to, side, [failed.from]);
+    s.push(`<g data-chain-context="earlier-failed-pass" opacity=".55">` +
+      gLine(from.x, from.y, to.x, to.y, CLR, 'blocked', .5, c.isCA) +
+      playerNode(from.x, from.y, failed.from, col) +
+      duelNode(to.x, to.y, col, defCol, failed.outcome, failed.to, failed.defender) +
+      `</g>`);
   }
 
   const DR = 14; // duel node radius for edge offsets
@@ -671,22 +716,34 @@ function renderMiniChain(opp) {
 function buildPassSummary(opp) {
   if (!opp) return '';
   const c    = stepsToChain(opp);
-  const col  = opp.teamSide === 'home' ? HC : AC;
-  const team = opp.teamSide === 'home' ? _match?.meta?.homeTeam : _match?.meta?.awayTeam;
+  const chainSide = c.isCA ? (opp.teamSide === 'home' ? 'away' : 'home') : opp.teamSide;
+  const col  = chainSide === 'home' ? HC : AC;
+  const team = chainSide === 'home' ? _match?.meta?.homeTeam : _match?.meta?.awayTeam;
   const qColor = q => tierColor(qualityLabel(q)); // qualityLabel() comes from parser.js
 
   const nameTag = (name, pos) => name
     ? `${escapeHtml(name.split(' ').pop())} <span class="ps-pos">[${escapeHtml(pos)||'?'}]</span>`
     : escapeHtml(pos)||'?';
 
-  const rows = [];
-  if (c.sP && c.mP) rows.push({
-    from: nameTag(c.sName, c.sP), to: nameTag(c.mName, c.mP), type:'Start', q: c.sQ
-  });
-  if (c.pbP && c.rP) rows.push({
-    from: nameTag(c.pbName, c.pbP), to: nameTag(c.rName, c.rP),
-    type: c.isLongBallSequence ? 'Long Ball' : 'Mid Action', q: c.pbQ
-  });
+  // List every pass in the displayed attacking sequence. A fixed Start/PB summary used
+  // to omit a recovered second midfield pass and made the chain detail disagree with the
+  // narrative. Counter-attacks intentionally show their CA steps only, matching the
+  // highlighted pitch route and the team named in the header.
+  const pool = c.isCA ? (opp.steps || []).filter(step => step.isCA) : (opp.steps || []);
+  let startPassNumber = 0;
+  const rows = pool.filter(step => ['START_PASS', 'PB_PASS', 'SP_PASS', 'FK_PASS'].includes(step.stepType))
+    .map(step => {
+      if (step.stepType === 'START_PASS') startPassNumber++;
+      const type = step.stepType === 'START_PASS' ? (startPassNumber === 1 ? 'Start' : 'Recovery')
+        : step.stepType === 'PB_PASS' ? (opp.isLongBallSequence ? 'Long Ball' : 'PB Action')
+        : step.stepType === 'SP_PASS' ? 'Corner' : 'Free Kick';
+      return {
+        from: nameTag(step.from?.name, step.from?.position),
+        to: nameTag(step.to?.name, step.to?.position),
+        type,
+        q: step.values?.pass?.value ?? null,
+      };
+    });
 
   if (!rows.length) return '';
   let html = `<div class="ps-title"><span>Chain detail</span></div>`;
@@ -732,11 +789,13 @@ const OUT_CSS = {
   GOAL:'ob-goal', POST:'ob-post', SAVED:'ob-saved', FUMBLED:'ob-fumbled', MISSED:'ob-post',
   GK_INTERCEPT:'ob-intercept', BLOCKED:'ob-blocked', SHOT_BLOCKED:'ob-blocked', CORNER:'ob-corner',
   FOUL:'ob-foul', CLEARED:'ob-cleared', POSSESSION:'ob-won', WON:'ob-won', FREE_KICK:'ob-fk',
+  OFFSIDE:'ob-foul',
 };
 const OUT_LBL = {
   GOAL:'GOAL', POST:'post', SAVED:'saved', FUMBLED:'fumbled', MISSED:'missed wide',
   GK_INTERCEPT:'intercept', BLOCKED:'blocked', SHOT_BLOCKED:'shot blocked', CORNER:'corner',
   FOUL:'foul', CLEARED:'cleared', POSSESSION:'won', WON:'won', FREE_KICK:'free kick',
+  OFFSIDE:'offside',
 };
 
 function lv(label, qvObj) {
@@ -753,13 +812,14 @@ function lv(label, qvObj) {
 // Resolved from tacticalEvents at render time: walk events up to a given minute, tracking
 // the most recent injury/tiredness onset per player.
 //
-// HALF_TIME clears only the reported TIREDNESS, not injuries. FinalWhistle gives a
-// Constitution recovery at the break (+0.44 CO per first-half minute played, capped at
-// +20), which this extension has no way to reconstruct (it doesn't track hidden CO
-// state) — so rather than guess at a second-half fatigue number, a first-half tiredness
-// report simply isn't carried forward. An injury is a different kind of state entirely:
-// FinalWhistle injuries persist across half time (they don't heal at the break), so
-// clearing them here would misreport a still-injured player as fit.
+// HALF_TIME (and EXTRA_TIME_BREAK, the same "players rest a bit" mechanic when a match
+// goes beyond regulation) clears only the reported TIREDNESS, not injuries. FinalWhistle
+// gives a Constitution recovery at each such break (+0.44 CO per minute played since the
+// last one, capped at +20), which this extension has no way to reconstruct (it doesn't
+// track hidden CO state) — so rather than guess at a post-break fatigue number, a
+// pre-break tiredness report simply isn't carried forward. An injury is a different kind
+// of state entirely: FinalWhistle injuries persist across every break (they don't heal),
+// so clearing them here would misreport a still-injured player as fit.
 // nm() calls this for every player shown in the step table — a step with two players
 // (most of them) calls it twice, so a match with many opportunities repeats the same
 // from-the-start walk over tacticalEvents dozens of times over. Cache by player+minute;
@@ -773,7 +833,7 @@ function playerStatusAt(events, playerName, minute) {
   let injury = null, tiredness = null;
   for (const ev of events) {
     if (ev.minute != null && ev.minute > minute) break;
-    if (ev.type === 'HALF_TIME') { tiredness = null; continue; }
+    if (ev.type === 'HALF_TIME' || ev.type === 'EXTRA_TIME_BREAK') { tiredness = null; continue; }
     if (ev.player?.name !== playerName) continue;
     if (ev.type === 'INJURY')    injury    = ev.severity;
     if (ev.type === 'TIREDNESS') tiredness = ev.level;
@@ -875,7 +935,7 @@ function renderStepDetail(opp) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TACTICAL EVENTS  — substitutions, position/mentality/style changes, half time
 // ─────────────────────────────────────────────────────────────────────────────
-const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','ISOLATE','HALF_TIME']);
+const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','PREFERRED_SIDE_CHANGE','ISOLATE','HALF_TIME','EXTRA_TIME_BREAK']);
 
 function lastName(p) { return escapeHtml(p?.name?.split(' ').pop()) || '?'; }
 
@@ -911,6 +971,10 @@ function impactTag(ev) {
 
 function renderTacticalRow(ev) {
   if (ev.type === 'HALF_TIME') return `<div class="tac-half">— HALF TIME —</div>`;
+  if (ev.type === 'EXTRA_TIME_BREAK') {
+    const label = ev.period === 'halfway' ? 'END OF FIRST EXTRA TIME' : 'EXTRA TIME';
+    return `<div class="tac-half">— ${label} —</div>`;
+  }
 
   // ISOLATE carries issuingTeam instead of team, so parseMatch never resolves its teamSide.
   let side = ev.teamSide;
@@ -935,15 +999,15 @@ function renderTacticalRow(ev) {
       break;
     case 'STYLE_CHANGE':
       icon = '⚙';
-      // Labeled "Middle order", not "Style" — the source line doesn't establish whether
-      // this is the manual's team-wide Style of Play or a per-zone player order (see
-      // parser.js's tactical-construct audit comment). "Style →" would prime a reader
-      // toward the same unproven reading analytics.js must not encode either.
-      text = `Middle order <span class="p-arr">→</span> ${escapeHtml(ev.style)}${impactTag(ev)}`;
+      text = `Style of Play <span class="p-arr">→</span> ${escapeHtml(ev.style)}${impactTag(ev)}`;
       break;
     case 'ISOLATE':
       icon = '🎯';
       text = `Isolate ${lastName(ev.target)} <span class="p-pos">[${escapeHtml(ev.target?.position)||'?'}]</span>`;
+      break;
+    case 'PREFERRED_SIDE_CHANGE':
+      icon = '⚙';
+      text = `Preferred side <span class="p-arr">→</span> ${escapeHtml(ev.preferredSide)}${impactTag(ev)}`;
       break;
   }
   return `<div class="tac-row" style="border-left-color:${col}">
@@ -1430,8 +1494,14 @@ function renderStats(stats, homeTeam, awayTeam, opportunities) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PHASES  — opportunities/shots/goals/possession by game window
-// ─────────────────────────────────────────────────────────────────────────────
+// GAME PHASES  — opportunities/shots/goals by fixed 0-90' window. There is no longer a
+// dedicated Phases tab for this (see the Tactics tab's own Tactical Phases section for the
+// dynamic, material-change-triggered equivalent) — these fixed windows are kept only
+// because the JPG export's full-view scope still uses computePhaseStats for its compact
+// per-window table (see renderExportPhaseTable below). Like the rest of this file,
+// phaseIndexOf clamps any minute above 90 into the last window, which silently folds
+// extra-time opportunities into 70-90' rather than giving them their own bucket — a
+// known, not-yet-addressed gap for a match that goes to extra time.
 const GAME_PHASES = [
   { label: '0–30\'',  hi: 30 },
   { label: '30–45\'', hi: 45 },
@@ -1474,33 +1544,8 @@ function computePhaseStats(match) {
   });
   return stats;
 }
-function renderPhaseStats(match) {
-  if (!match?.opportunities?.length) return '<div class="no-data" style="padding:20px 0">No match data.</div>';
-  const stats = computePhaseStats(match);
-  let html = `<div style="padding:8px;overflow-y:auto;flex:1">`;
-  // The site's own Ball Possession stat is a single match-wide figure, not broken down by
-  // time — there's no parsed data giving a real per-window possession share. Opportunity
-  // share (each side's fraction of opportunities in that window) is the closest confident
-  // proxy derivable from what's actually parsed, so it's labeled as exactly that rather
-  // than passed off as the site's own possession number.
-  html += `<div class="qt-hint">Opportunities/shots/goals are exact counts per window. "Poss." is each side's share of opportunities in that window, used as a proxy — FinalWhistle's own Ball Possession stat isn't broken down by time.</div>`;
-  stats.forEach(s => {
-    const totalOpps = s.home.opps + s.away.opps;
-    const homePoss = totalOpps ? Math.round(s.home.opps / totalOpps * 100) : 0;
-    const awayPoss = totalOpps ? 100 - homePoss : 0;
-    html += `<div class="dist-title">${escapeHtml(s.label)}</div>`;
-    html += statBarRow('Opportunities', s.home.opps, s.away.opps, s.home.opps, s.away.opps);
-    html += statBarRow('Shots', s.home.shots, s.away.shots, s.home.shots, s.away.shots);
-    if (s.home.goals || s.away.goals)
-      html += statBarRow('Goals', s.home.goals, s.away.goals, s.home.goals, s.away.goals);
-    html += statBarRow('Poss. (by opp. share)', homePoss + '%', awayPoss + '%', homePoss, awayPoss);
-  });
-  html += '</div>';
-  return html;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// SQUAD  — tiredness/subs/position/mentality & style changes, split by team
+// TACTICS  — main team tactics, tiredness, substitutions, and observed changes by team
 // ─────────────────────────────────────────────────────────────────────────────
 // Tiredness reports aren't single events the way a substitution is — the same player can
 // be reported tired more than once over the match (tired at 40', very tired at 70') — so
@@ -1535,27 +1580,36 @@ function renderTirednessGroup(g, col) {
 // A compact timeline answering "when did this team's configuration change, and what
 // changed": one card per dynamic tactical phase (parser.js's buildTacticalPhases —
 // starts a new phase only on a material change, never on an opportunity/shot/score/
-// tiredness alone). Added as a new section within the existing Squad tab rather than a
-// new tab or a rewrite — the tab already deals in per-team tacticalEvents, and the fixed
-// 0–30/30–45/45–70/70–90 window comparison on the separate Phases tab is untouched.
-// Only fields parser.js actually populated are shown; an unpopulated setting (marking,
-// defence focus, preferred side, offside, player orders, aggression, arrows — none of
-// these are exposed by the narrative constructs this parser currently recognizes, see
-// parser.js's tactical-construct audit comment) renders as "—", never guessed or filled in.
+// tiredness alone). Shown first in the Tactics tab, before its supporting event lists.
+// This is distinct from GAME_PHASES' fixed 0–30/30–45/45–70/70–90 windows above
+// (computational only now, no longer its own tab — see that section's own comment):
+// these are dynamic,
+// material-change-triggered phases, not fixed clock windows.
+// Only fields parser.js actually populated are shown; a setting still genuinely
+// unpopulated (offside, player orders, aggression, arrows — none of these are exposed by
+// any narrative construct this parser currently recognizes, see parser.js's
+// tactical-construct audit comment) renders as "—", never guessed or filled in.
+// The five Manual-defined main team tactics are always shown, including unknown values.
+// mentality/style/preferredSide can differ phase to phase because the report exposes
+// change events for them. Marking/defenceFocus currently only come from the match page's
+// pre-match summary, because no confirmed change wording has been observed for them.
 function renderTacticalPhaseRow(phase, col) {
   const period = phase.endMinute != null ? `${phase.startMinute}–${phase.endMinute}'` : `${phase.startMinute}'+`;
   const ts = phase.state.teamState;
-  const mentality = ts.mentality || '—';
-  // teamState.style is intentionally never populated (see parser.js's initialTeamState
-  // comment) — the observed "Change order to X" value lives in middleOrder instead, and
-  // is labeled "Middle order" here rather than "Style" for the same reason.
-  const middleOrder = ts.middleOrder || '—';
+  const tacticRows = [
+    ['Mentality', ts.mentality],
+    ['Style of Play', ts.style],
+    ['Marking', ts.marking],
+    ['Defence Focus', ts.defenceFocus],
+    ['Preferred Side', ts.preferredSide],
+  ].map(([label, value]) =>
+    `<span><b>${label}:</b> ${escapeHtml(value || '—')}</span>`).join('');
   const changes = phase.triggeredBy.length
     ? phase.triggeredBy.map(renderTacticalRow).join('')
     : '<div class="qt-hint">Initial state — no tactical changes observed yet.</div>';
   return `<div style="margin-bottom:8px;padding:6px 8px;border-left:2px solid ${col};background:#0d1526">
     <div style="font-size:11px;color:${col};font-weight:700">${escapeHtml(period)}</div>
-    <div class="qt-hint" style="margin:2px 0 4px">Mentality: ${escapeHtml(mentality)} &middot; Middle order: ${escapeHtml(middleOrder)}</div>
+    <div class="tactic-values" style="margin:4px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:3px 10px;font-size:10px;color:#8fa8c8">${tacticRows}</div>
     ${changes}
   </div>`;
 }
@@ -1574,7 +1628,9 @@ function renderSquadColumn(match, side) {
   const tiredness   = groupTirednessByPlayer(events.filter(ev => ev.type === 'TIREDNESS'));
   const subs        = events.filter(ev => ev.type === 'SUBSTITUTION').sort(byMinute);
   const posChanges  = events.filter(ev => ev.type === 'POSITION_CHANGE').sort(byMinute);
-  const mentaStyle  = events.filter(ev => ev.type === 'MENTALITY_CHANGE' || ev.type === 'STYLE_CHANGE').sort(byMinute);
+  const tacticChanges = events.filter(ev =>
+    ev.type === 'MENTALITY_CHANGE' || ev.type === 'STYLE_CHANGE' || ev.type === 'PREFERRED_SIDE_CHANGE'
+  ).sort(byMinute);
 
   const teamName = side === 'home' ? (match.meta?.homeTeam || 'Home') : (match.meta?.awayTeam || 'Away');
   const col = side === 'home' ? HC : AC;
@@ -1588,7 +1644,7 @@ function renderSquadColumn(match, side) {
   html += section('Tiredness', tiredness.length, tiredness.map(g => renderTirednessGroup(g, col)).join(''), 'No tiredness reports.');
   html += section('Substitutions', subs.length, subs.map(renderTacticalRow).join(''), 'No substitutions.');
   html += section('Position Changes', posChanges.length, posChanges.map(renderTacticalRow).join(''), 'No position changes.');
-  html += section('Mentality & Style', mentaStyle.length, mentaStyle.map(renderTacticalRow).join(''), 'No mentality/style changes.');
+  html += section('Tactic Changes', tacticChanges.length, tacticChanges.map(renderTacticalRow).join(''), 'No tactic changes observed.');
   html += `</div>`;
   return html;
 }
@@ -1640,7 +1696,7 @@ function renderPhaseComparisonSection(match, side, col) {
   const perf = phasePerformance(match, side); // computed once, reused for every card below
   if (!perf.length) return '';
   return `<div class="dist-title">Tactical Phase Comparison (${perf.length})</div>` +
-    `<div class="qt-hint">Own / Opponent counts per material tactical-state phase (see the Squad tab for what changed at each boundary). The Δ line is a neutral numeric comparison against the previous phase, not a verdict on whether the change helped.</div>` +
+    `<div class="qt-hint">Own / Opponent counts per material tactical-state phase (see the Tactics tab for what changed at each boundary). The Δ line is a neutral numeric comparison against the previous phase, not a verdict on whether the change helped.</div>` +
     perf.map((p, i) => renderPhaseComparisonCard(p, i > 0 ? perf[i - 1] : null, col)).join('');
 }
 
@@ -1748,12 +1804,127 @@ function setHighlight(chainHtml, dim = false) {
   const highlight = $('chain-highlight');
   if (!highlight) return; // pitch not built yet — nothing to highlight
   highlight.innerHTML = chainHtml;
-  const op = dim ? '0.15' : '1';
+  // Aggregate match flow is useful with nothing selected, but the previous 15% opacity
+  // still competed with long multi-stage chains. Reduce it to a near-watermark while
+  // inspecting one opportunity so direction arrows and outcome nodes remain legible.
+  const op = dim ? '0.04' : '1';
   const homeFlow = $('flow-home'), awayFlow = $('flow-away');
   if (homeFlow) homeFlow.style.opacity = op;
   if (awayFlow) awayFlow.style.opacity = op;
 }
 let _hoveredIdx  = null;
+
+// Build a compact issue-ready report instead of copying the entire match narrative.
+// The three surrounding lines on either side of each unknown line preserve the parser
+// context needed to recognise new FinalWhistle wording without unnecessarily including
+// every player/action in the match.
+function narrativeContexts(narrative, unknownLines, radius = 3) {
+  const sourceLines = String(narrative || '').split(/\r?\n/);
+  let searchFrom = 0;
+  return (unknownLines || []).map((entry, index) => {
+    const target = String(entry?.line ?? entry).trim();
+    let lineIndex = sourceLines.findIndex((line, i) => i >= searchFrom && line.trim() === target);
+    if (lineIndex < 0) lineIndex = sourceLines.findIndex(line => line.trim() === target);
+    if (lineIndex < 0) return { minute: entry?.minute ?? null, line: target, context: [] };
+    searchFrom = lineIndex + 1;
+    const start = Math.max(0, lineIndex - radius);
+    const end = Math.min(sourceLines.length, lineIndex + radius + 1);
+    return {
+      minute: entry?.minute ?? null,
+      line: target,
+      context: sourceLines.slice(start, end).map((line, offset) => ({
+        sourceLine: start + offset + 1,
+        unrecognized: start + offset === lineIndex,
+        text: line,
+      })),
+      occurrence: index + 1,
+    };
+  });
+}
+
+function buildDiagnosticReport(scrape = _lastRenderedScrape, match = _match) {
+  const validation = match?.validation || {};
+  const manifestVersion = (typeof chrome !== 'undefined' && chrome.runtime?.getManifest)
+    ? chrome.runtime.getManifest().version : 'unknown';
+  const scrapedDate = new Date(scrape?.scrapedAt);
+  const scrapedAt = Number.isNaN(scrapedDate.getTime()) ? String(scrape?.scrapedAt || 'unknown') : scrapedDate.toISOString();
+  const finalScore = match?.meta?.finalScore;
+  const score = finalScore ? `${finalScore.home ?? '?'}-${finalScore.away ?? '?'}` : 'unknown';
+  const unknownNarrative = validation.unknownNarrativeLines || [];
+  const details = {
+    extensionVersion: manifestVersion,
+    matchUrl: scrape?.url || 'unknown',
+    scrapedAt,
+    homeTeam: match?.meta?.homeTeam || scrape?.homeTeam || 'unknown',
+    awayTeam: match?.meta?.awayTeam || scrape?.awayTeam || 'unknown',
+    finalScore: score,
+    validationConfidence: validation.confidence || 'unknown',
+    opportunityCounts: {
+      narrative: validation.narrativeOpportunityCount ?? null,
+      telemetry: validation.telemetryOpportunityCount ?? null,
+      matched: validation.matchedBlocks?.length ?? null,
+    },
+  };
+  const diagnostics = {
+    scrapeErrors: scrape?.errors || [],
+    scrapeWarnings: scrape?.warnings || [],
+    parserWarnings: match?.warnings || [],
+    unknownNarrativeLines: unknownNarrative,
+    narrativeContexts: narrativeContexts(scrape?.narrative, unknownNarrative),
+    unknownTelemetryLines: validation.unknownTelemetryLines || [],
+    unmatchedNarrativeBlocks: validation.unmatchedNarrativeBlocks || [],
+    unusedTelemetryBlocks: validation.unusedTelemetryBlocks || [],
+    phaseMismatches: validation.phaseMismatches || [],
+    unresolvedTacticalEvents: validation.unresolvedTacticalEvents || [],
+  };
+  return [
+    '# FinalWhistle Match Analyser diagnostic',
+    '',
+    'Please paste this report into a GitHub issue. It contains parser diagnostics and only the nearby narrative context for unrecognized lines, not the complete match narrative.',
+    '',
+    '## Match',
+    '',
+    ...Object.entries(details).map(([key, value]) => `- ${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`),
+    '',
+    '## Diagnostics',
+    '',
+    '    ' + JSON.stringify(diagnostics, null, 2).replace(/\n/g, '\n    '),
+    '',
+  ].join('\n');
+}
+
+async function writeClipboardText(text) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('Clipboard copy was rejected by the browser.');
+}
+
+async function copyDiagnostics(button) {
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  try {
+    await writeClipboardText(buildDiagnosticReport());
+    button.textContent = 'Copied!';
+  } catch (error) {
+    console.error('Could not copy diagnostics', error);
+    button.textContent = 'Copy failed';
+  }
+  setTimeout(() => {
+    button.textContent = originalLabel;
+    button.disabled = false;
+  }, 1800);
+}
 
 function showErrors(errors, warnings) {
   let html = '';
@@ -1762,8 +1933,10 @@ function showErrors(errors, warnings) {
   if (errors?.length)
     html += `<div class="err-banner">${errors.map(e=>`<div>${escapeHtml(e)}</div>`).join('')}</div>`;
   if (warnings?.length)
-    html += `<div class="warn-banner">${warnings.map(w=>`<span class="tag-warn">WARN</span> ${escapeHtml(w)}`).join('<br>')}</div>`;
+    html += `<div class="warn-banner"><div class="warn-banner-row"><div class="warn-messages">${warnings.map(w=>`<span class="tag-warn">WARN</span> ${escapeHtml(w)}`).join('<br>')}</div><button type="button" class="copy-diagnostics" id="btn-copy-diagnostics" title="Copy an issue-ready troubleshooting report">Copy diagnostics</button></div></div>`;
   $('errors').innerHTML = html;
+  const copyButton = $('btn-copy-diagnostics');
+  if (warnings?.length && copyButton) copyButton.addEventListener('click', () => copyDiagnostics(copyButton));
 }
 
 // ── Scorers / assists (for the header) ───────────────────────────────────────────
@@ -1870,7 +2043,7 @@ function render(scrape) {
       // Trusted scrape metadata (the site's own team-name elements) takes priority over
       // parseMatch's own narrative/stream-based inference — see parser.js for why that
       // matters when one team never creates a single matched opportunity.
-      _match = parseMatch(scrape.telemetry||'', scrape.narrative, { homeTeam: scrape.homeTeam, awayTeam: scrape.awayTeam });
+      _match = parseMatch(scrape.telemetry||'', scrape.narrative, { homeTeam: scrape.homeTeam, awayTeam: scrape.awayTeam, initialTactics: scrape.initialTactics });
       parseWarnings = _match.warnings || [];
       _statusEvents = [...(_match.tacticalEvents||[])].sort((a,b) => (a.minute??0) - (b.minute??0));
       _statusCache.clear();
@@ -1922,15 +2095,14 @@ function render(scrape) {
   // than being isolated away like the panels below (see renderPanelSafely above).
   renderOppSummaryAndList();
 
-  // Stats / fixed-window Phases / Squad / Analysis are independent secondary panels — a
+  // Stats / Tactics / Analysis are independent secondary panels — a
   // bug in any ONE of them (most likely Analysis, the newest and most complex) must not
   // blank out the others or stop the pitch from building below. Each gets its own
   // try/catch and degrades to a locally-scoped, escaped error message in its own panel
   // rather than either crashing the whole viewer or silently swallowing the exception
   // (still logged via console.error either way).
   renderPanelSafely('panel-stats', 'Statistics', () => renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities));
-  renderPanelSafely('panel-phases', 'Phases', () => renderPhaseStats(_match));
-  renderPanelSafely('panel-squad', 'Squad', () => renderSquadTab(_match));
+  renderPanelSafely('panel-squad', 'Tactics', () => renderSquadTab(_match));
   renderPanelSafely('panel-analysis', 'Analysis', () => renderAnalysisTab(_match));
 
   // Pitch — rebuild entire SVG as one string (SVG namespace safe)
@@ -2133,9 +2305,9 @@ function clickTimelineMarker(idx) {
 //
 // The full-view scope shows the pinned possession's chain detail + narrative excerpt
 // (mirroring what's already visible in the live right-overlay panel) plus a compact
-// per-window opportunity/shot/goal table (computePhaseStats, reused from the Phases
-// tab) — a snapshot of the app's own current state, not a rendering of every
-// opportunity row in the list.
+// per-window opportunity/shot/goal table (computePhaseStats — see its own comment above
+// for the extra-time clamping caveat that applies here too) — a snapshot of the app's
+// own current state, not a rendering of every opportunity row in the list.
 
 const EXPORT_MAX_DISPLAY_CHARS = 240;
 const COMPACT_EXPORT_WIDTH = 1600;

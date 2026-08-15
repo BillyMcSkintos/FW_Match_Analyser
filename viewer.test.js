@@ -37,7 +37,7 @@ function loadViewerContext() {
     },
     chrome: {
       storage: { local: { get(_k, cb) { if (cb) cb({}); }, set() {}, remove() {} } },
-      runtime: { getURL: p => 'chrome-extension://test/' + p, sendMessage: async () => ({}) },
+      runtime: { getURL: p => 'chrome-extension://test/' + p, getManifest: () => ({ version: '0.4.0-test' }), sendMessage: async () => ({}) },
       tabs: { query: async () => [] },
     },
     location: { search: '' },
@@ -54,6 +54,58 @@ function loadViewerContext() {
   return context;
 }
 
+test('diagnostic report includes the match URL and exact unknown lines with nearby context', () => {
+  const ctx = loadViewerContext();
+  const scrape = {
+    url: 'https://example.finalwhistle.org/match/123',
+    scrapedAt: Date.UTC(2026, 7, 14, 12, 30),
+    narrative: ['Minute 9', 'Opportunity for Home.', 'Midfield', 'Known action', 'New FinalWhistle wording', 'Goal Attempt'].join('\n'),
+    errors: [],
+    warnings: ['Scrape warning'],
+  };
+  const match = {
+    meta: { homeTeam: 'Home', awayTeam: 'Away', finalScore: { home: 2, away: 1 } },
+    warnings: ["1 unrecognized narrative line(s) within an opportunity — FinalWhistle's wording may have changed."],
+    validation: {
+      confidence: 'exact', narrativeOpportunityCount: 1, telemetryOpportunityCount: 1, matchedBlocks: [{}],
+      unknownNarrativeLines: [{ minute: 9, line: 'New FinalWhistle wording' }],
+      unknownTelemetryLines: [], unmatchedNarrativeBlocks: [], unusedTelemetryBlocks: [],
+      phaseMismatches: [], unresolvedTacticalEvents: [],
+    },
+  };
+  const report = ctx.buildDiagnosticReport(scrape, match);
+  assert.match(report, /https:\/\/example\.finalwhistle\.org\/match\/123/);
+  assert.match(report, /0\.4\.0-test/);
+  assert.match(report, /New FinalWhistle wording/);
+  assert.match(report, /Known action/);
+  assert.match(report, /"unrecognized": true/);
+});
+
+test('diagnostic report includes telemetry and matching diagnostics', () => {
+  const ctx = loadViewerContext();
+  const report = ctx.buildDiagnosticReport(
+    { url: 'https://example.finalwhistle.org/match/456', scrapedAt: 1 },
+    { meta: {}, warnings: [], validation: {
+      unknownTelemetryLines: ["15' - H - NEW_TOKEN - (42)"],
+      unmatchedNarrativeBlocks: [{ minute: 15, side: 'H' }],
+      unusedTelemetryBlocks: [{ minute: 16, side: 'A' }],
+      phaseMismatches: [{ minute: 15, narrativePhaseCount: 2, streamPhaseCount: 3 }],
+      unresolvedTacticalEvents: [{ minute: 70, type: 'STYLE_CHANGE' }],
+    } },
+  );
+  assert.match(report, /NEW_TOKEN/);
+  assert.match(report, /unmatchedNarrativeBlocks/);
+  assert.match(report, /unusedTelemetryBlocks/);
+  assert.match(report, /phaseMismatches/);
+  assert.match(report, /unresolvedTacticalEvents/);
+});
+
+test('selected-opportunity narrative is viewport-bounded and vertically scrollable', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'viewer.html'), 'utf8');
+  assert.match(html, /\.right-overlay\{[^}]*top:10px;[^}]*bottom:10px;/);
+  assert.match(html, /\.raw-panel\{[^}]*min-height:0;[^}]*flex:1;[^}]*overflow-y:auto;/);
+});
+
 test('half time clears reported tiredness but preserves injury', () => {
   const ctx = loadViewerContext();
   const events = [
@@ -68,6 +120,21 @@ test('half time clears reported tiredness but preserves injury', () => {
   const after = ctx.playerStatusAt(events, 'Player A', 46);
   assert.equal(after.injury, 'LIGHT', 'injury must persist across half time');
   assert.equal(after.tiredness, null, 'first-half tiredness report must not carry into the second half');
+});
+
+test('an extra-time break clears reported tiredness the same way half time does', () => {
+  const ctx = loadViewerContext();
+  const events = [
+    { minute: 20, type: 'INJURY', player: { name: 'Player A' }, severity: 'LIGHT' },
+    { minute: 85, type: 'TIREDNESS', player: { name: 'Player A' }, level: 'VERY_TIRED' },
+    { minute: 90, type: 'EXTRA_TIME_BREAK', period: 'start' },
+  ];
+  const before = ctx.playerStatusAt(events, 'Player A', 89);
+  assert.equal(before.tiredness, 'VERY_TIRED');
+
+  const after = ctx.playerStatusAt(events, 'Player A', 95);
+  assert.equal(after.injury, 'LIGHT', 'injury must persist across the break');
+  assert.equal(after.tiredness, null, 'a pre-break tiredness report must not carry into extra time');
 });
 
 test('tiredness reported again in the second half is tracked normally', () => {
@@ -86,6 +153,21 @@ test('an uninjured, untired player reports both as null', () => {
   const result = ctx.playerStatusAt([], 'Nobody', 10);
   assert.equal(result.injury, null);
   assert.equal(result.tiredness, null);
+});
+
+test('renderTacticalRow shows a distinct bar for the start of extra time vs the changeover between its two halves', () => {
+  const ctx = loadViewerContext();
+  const start = ctx.renderTacticalRow({ type: 'EXTRA_TIME_BREAK', period: 'start', minute: 90 });
+  assert.ok(start.includes('EXTRA TIME'));
+  const halfway = ctx.renderTacticalRow({ type: 'EXTRA_TIME_BREAK', period: 'halfway', minute: 105 });
+  assert.ok(halfway.includes('END OF FIRST EXTRA TIME'));
+});
+
+test('renderTacticalRow shows the preferred-side order', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderTacticalRow({ type: 'PREFERRED_SIDE_CHANGE', preferredSide: 'LEFT_RIGHT', teamSide: 'home', minute: 78 });
+  assert.ok(html.includes('Preferred side'));
+  assert.ok(html.includes('LEFT_RIGHT'));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +254,49 @@ test('counter-attacking pass type is credited to the countering team in buildTyp
   // The pre-CA START_PASS belongs to home; the post-CA START_PASS + PB_PASS belong to away.
   assert.equal(counts.home.normal, 1, 'only the pre-CA start pass is home\'s');
   assert.equal(counts.away.normal, 2, 'the post-CA start pass and box pass both belong to away');
+});
+
+test('a recovered counter-attack highlights the successful route and keeps the blocked pass as context', () => {
+  const ctx = loadViewerContext();
+  const opp = {
+    teamSide: 'away', isCounterAttack: true,
+    steps: [
+      { stepType: 'START_PASS', isCA: true, attackingSide: 'home', from: { name: 'Martinov', position: 'CB' }, to: { name: 'Sperstad', position: 'RM' }, values: { pass: { value: 1 } } },
+      { stepType: 'MID_DUEL', isCA: true, attackingSide: 'home', attacker: { name: 'Sperstad', position: 'RM' }, defender: null, outcome: 'BLOCKED', values: {} },
+      { stepType: 'START_PASS', isCA: true, attackingSide: 'home', from: { name: 'Wicinski', position: 'RB' }, to: { name: 'Sato', position: 'LM' }, values: { pass: { value: 75 } } },
+      { stepType: 'MID_DUEL', isCA: true, attackingSide: 'home', attacker: { name: 'Sato', position: 'LM' }, defender: { name: 'Gentil', position: 'RW' }, outcome: 'POSSESSION', values: {} },
+      { stepType: 'PB_PASS', isCA: true, attackingSide: 'home', from: { name: 'Sato', position: 'LM' }, to: { name: 'Tsur', position: 'FW' }, values: { pass: { value: 95 } } },
+      { stepType: 'PB_DUEL', isCA: true, attackingSide: 'home', attacker: { name: 'Tsur', position: 'FW' }, defender: { name: 'Clatesteanu', position: 'CB' }, outcome: 'WON', values: {} },
+      { stepType: 'SHOT', isCA: true, attackingSide: 'home', shooter: { name: 'Tsur', position: 'FW' }, gk: { name: 'Barrionuevo', position: 'GK' }, outcome: 'GOAL', values: { shot: { value: 55 }, gkSave: { value: 75 } } },
+    ],
+  };
+
+  const chain = ctx.stepsToChain(opp);
+  assert.equal(chain.sP, 'RB', 'the recovered successful pass must be the main route start');
+  assert.equal(chain.mP, 'LM');
+  assert.equal(chain.earlierFailedPasses.length, 1);
+  assert.equal(chain.earlierFailedPasses[0].from, 'CB');
+  assert.match(ctx.renderHighlightChain(opp), /data-chain-context="earlier-failed-pass"/);
+});
+
+test('counter-attack chain detail uses the countering team and includes a recovery pass', () => {
+  const ctx = loadViewerContext();
+  vm.runInContext("_match = { meta: { homeTeam: 'AC Pasofino', awayTeam: 'Parana Clube' } }", ctx);
+  const opp = {
+    teamSide: 'away', isCounterAttack: true,
+    steps: [
+      { stepType: 'START_PASS', isCA: true, from: { name: 'Gavril Martinov', position: 'CB' }, to: { name: 'Torgeir Sperstad', position: 'RM' }, values: { pass: { value: 1 } } },
+      { stepType: 'MID_DUEL', isCA: true, outcome: 'BLOCKED' },
+      { stepType: 'START_PASS', isCA: true, from: { name: 'Jan Wicinski', position: 'RB' }, to: { name: 'Fagner Sato', position: 'LM' }, values: { pass: { value: 75 } } },
+      { stepType: 'MID_DUEL', isCA: true, outcome: 'POSSESSION' },
+      { stepType: 'PB_PASS', isCA: true, from: { name: 'Fagner Sato', position: 'LM' }, to: { name: 'Naor Tsur', position: 'FW' }, values: { pass: { value: 95 } } },
+    ],
+  };
+  const html = ctx.buildPassSummary(opp);
+  assert.match(html, /AC Pasofino/);
+  assert.doesNotMatch(html, /Parana Clube/);
+  assert.match(html, /Wicinski/);
+  assert.match(html, /Recovery/);
 });
 
 test('goal scorer teamSide differs from opp.teamSide via buildScorers', () => {
@@ -298,26 +423,33 @@ test('malicious player/team names are escaped, not injected as HTML', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tactical Phases — Squad tab rendering
+// Tactical Phases — Tactics tab rendering
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('renderTacticalPhasesSection shows one card per material change, with only known fields', () => {
+test('renderTacticalPhasesSection shows all five main tactics on every phase card', () => {
   const ctx = loadViewerContext();
   const narrative = [
     'Minute 62',
     'Home Team - Issued order- Change mentality to ATTACKING',
   ].join('\n');
-  const match = ctx.parseMatch('', narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const initialTactics = {
+    home: { mentality: 'NORMAL', style: 'THROUGH_BALLS', marking: 'ZONE', defenceFocus: 'CENTER', preferredSide: 'LEFT' },
+    away: { mentality: 'DEFENSIVE', style: 'FLEXIBLE', marking: 'MAN_TO_MAN', defenceFocus: 'NORMAL', preferredSide: 'RIGHT' },
+  };
+  const match = ctx.parseMatch('', narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team', initialTactics });
   const html = ctx.renderTacticalPhasesSection(match, 'home', '#4da3ff');
 
   assert.ok(html.includes('Tactical Phases (2)'), 'kickoff phase + the mentality change');
   // escapeHtml renders the apostrophe as &#39; — assert on the digits/dash, not the raw quote.
   assert.ok(html.includes('0–62'), 'first phase period label');
   assert.ok(html.includes('ATTACKING'), 'the changed setting is shown');
-  // Middle order was never observed for this team — must render as the unknown marker,
-  // never a guessed value. Labeled "Middle order", not "Style" — see parser.js's
-  // initialTeamState comment on why teamState.style is never populated.
-  assert.ok(html.includes('Middle order: —'));
+  for (const [label, value] of [
+    ['Mentality', 'NORMAL'], ['Style of Play', 'THROUGH_BALLS'], ['Marking', 'ZONE'],
+    ['Defence Focus', 'CENTER'], ['Preferred Side', 'LEFT'],
+  ]) {
+    assert.ok(html.includes(`<b>${label}:</b> ${value}`), `${label} should be shown at kickoff`);
+  }
+  assert.ok(html.includes('<b>Mentality:</b> ATTACKING'), 'the subsequent mentality change is shown in the next phase');
   assert.ok(html.includes('Initial state'), 'the first (kickoff) phase has no triggering event');
 
   // Away team never had a single tactical event — section renders nothing for the away
@@ -338,7 +470,7 @@ test('renderTacticalPhasesSection escapes malicious player/team text from a subs
   assert.ok(!html.includes('<script>evil()'), 'the raw tag must not survive into the rendered phase card');
 });
 
-test('renderSquadTab still renders the existing sections alongside the new Tactical Phases section', () => {
+test('renderSquadTab still renders supporting event sections alongside Tactical Phases', () => {
   const ctx = loadViewerContext();
   const narrative = [
     'Minute 10',
@@ -356,6 +488,20 @@ test('renderSquadTab still renders the existing sections alongside the new Tacti
   assert.ok(html.includes('Tactical Phases'));
   assert.ok(html.includes('Position Changes'));
   assert.ok(html.includes('Substitutions'));
+});
+
+test('renderTacticalPhasesSection shows a Style of Play change in the next phase', () => {
+  const ctx = loadViewerContext();
+  const narrative = ['Minute 20', 'Home Team - Issued order- Change order to LONG_BALLS'].join('\n');
+  const match = ctx.parseMatch('', narrative, {
+    homeTeam: 'Home Team', awayTeam: 'Away Team',
+    initialTactics: { home: { style: 'THROUGH_BALLS' }, away: {} },
+  });
+  const html = ctx.renderTacticalPhasesSection(match, 'home', '#4da3ff');
+  assert.ok(html.includes('<b>Style of Play:</b> THROUGH_BALLS'), 'kickoff phase');
+  assert.ok(html.includes('<b>Style of Play:</b> LONG_BALLS'), 'changed phase');
+  assert.ok(html.includes('Style of Play <span class="p-arr">→</span> LONG_BALLS'));
+  assert.equal(html.includes('Middle order'), false);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

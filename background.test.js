@@ -119,6 +119,8 @@ function basicScrape(overrides = {}) {
     narrative: 'Some narrative text.',
     telemetry: 'Some telemetry text.',
     statistics: { Possession: { home: '54%', away: '46%' } },
+    initialTactics: { home: { mentality: 'NORMAL', style: 'SHORT_PASSES', marking: 'ZONE', defenceFocus: 'NORMAL', preferredSide: 'NORMAL' },
+                       away: { mentality: 'NORMAL', style: 'THROUGH_BALLS', marking: 'ZONE', defenceFocus: 'NORMAL', preferredSide: 'NORMAL' } },
     homeTeam: 'Home FC',
     awayTeam: 'Away FC',
     url: 'https://www.finalwhistle.org/en/match/abc',
@@ -185,6 +187,24 @@ test('sanitizeScrapeResult drops a malformed statistics object to null instead o
   const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({ statistics: { Possession: { home: '54%' } } }))); // missing "away"
   assert.equal(out.statistics, null);
   assert.equal(out.narrative, 'Some narrative text.', 'the rest of the scrape must still come through');
+});
+
+test('sanitizeScrapeResult drops an unknown field and non-string values out of initialTactics without rejecting the whole scrape', () => {
+  const ctx = loadBackgroundContext();
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({
+    initialTactics: {
+      home: { mentality: 'ATTACKING', style: 42, offside: 'ZONAL' }, // offside isn't a known field; style isn't a string
+      away: null,
+    },
+  })));
+  assert.equal(JSON.stringify(out.initialTactics), JSON.stringify({ home: { mentality: 'ATTACKING' }, away: {} }));
+});
+
+test('sanitizeScrapeResult treats a hostile (non-record) initialTactics as absent, not fatal', () => {
+  const ctx = loadBackgroundContext();
+  const out = ctx.sanitizeScrapeResult(inRealm(ctx, basicScrape({ initialTactics: 'not an object' })));
+  assert.equal(out.initialTactics, null);
+  assert.equal(out.ok, true, 'a malformed optional field must not sink an otherwise-usable scrape');
 });
 
 test('sanitizeScrapeResult filters non-string entries out of errors/warnings and recomputes ok from the cleaned errors', () => {

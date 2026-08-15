@@ -9,6 +9,28 @@ Versions follow `MAJOR.MINOR.PATCH`:
 The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 `manifest.json`'s `version` field is canonical — `package.json` is kept in sync with it.
 
+## [Unreleased]
+
+### Added
+- Kickoff scraping and tactical-phase display for all five main team tactics: Mentality,
+  Style of Play, Marking, Defence Focus, and Preferred Side.
+- Extra-time break, preferred-side order, and successful/failed offside-trap parsing,
+  backed by a new integration fixture.
+- One-click issue-ready diagnostic copying from warning banners, including exact unknown
+  lines and nearby narrative context.
+
+### Changed
+- Renamed the Squad tab to **Tactics** and removed the redundant fixed-window Phases tab.
+- Recovered counter-attacks now emphasize the route that continued while keeping an
+  earlier blocked pass as subdued pitch context; Chain Detail uses the actual attacking
+  team and includes recovery passes.
+- Selected-opportunity narrative is viewport-bounded and vertically scrollable.
+
+### Fixed
+- Style-change wording is labeled and modeled as **Style of Play**, never “Middle Order.”
+- Recognized observed unfavored-pass requests and shots rebounding from the crossbar.
+- Repeated Scrape clicks no longer redeclare top-level scraper bindings in the same tab.
+
 ## [0.4.0] — Fork-review adoptions: hardening + JPG export
 
 Six items cherry-picked from an independent hardening/feature pass on a fork of this
@@ -111,12 +133,12 @@ version bump — see `git log` for that history if needed.
 5. Inspect Pitch
 6. Inspect Opportunities
 7. Inspect Statistics
-8. Inspect fixed-window Phases
-9. Inspect Squad / Tactical Phases
+8. Inspect Tactics / Tactical Phases, including all five kickoff settings
+9. Test an extra-time or offside match when one is available
 10. Inspect Analysis
 11. Test hover/click/pinning on an opportunity
 12. Test a match with missing Statistics (still `ok: true`)
-13. Clear and rescrape
+13. Clear and rescrape, then scrape the same tab again
 14. Bump `manifest.json`'s `version` (keep `package.json` in sync)
 15. Update this file
 16. Commit/tag

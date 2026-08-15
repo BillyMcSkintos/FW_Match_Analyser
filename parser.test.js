@@ -507,6 +507,67 @@ test('validation captures an unrecognized narrative line within a phase without 
   assert.ok(match.warnings.some(w => w.includes('unrecognized narrative line')), match.warnings.join('; '));
 });
 
+test('a requested unfavored low pass is recognized and preserved on the pass step', () => {
+  const narrative = [
+    'Minute 16',
+    'Opportunity for Home Team.',
+    'Penalty Box',
+    'Player A [LM] was requested to send unfavored low pass.',
+    'Player A [LM] attempted low excellent accurate pass to Player B [FW]',
+    'Player C [CB] got good assistance, and was in perfect position.',
+    'Player B [FW] made awesome reception, Player C [CB] made good tackle.',
+    'Player C [CB] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "16' - H - O_PB_START",
+    "16' - H - V_PASS - (80)",
+    "16' - A - V_ASSISTANCE - (60)",
+    "16' - H - V_RECEPTION - (85)",
+    "16' - A - V_TACKLING - (65)",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  const pass = match.opportunities[0].steps.find(step => step.stepType === 'PB_PASS');
+  assert.deepEqual(pass.passRequest, {
+    player: { name: 'Player A', position: 'LM', team: 'Home Team', side: 'home' },
+    preference: 'unfavored',
+    height: 'low',
+  });
+});
+
+test('a shot bouncing off the bar is recognized as a woodwork POST outcome', () => {
+  const narrative = [
+    'Minute 52',
+    'Opportunity for Home Team.',
+    'Penalty Box',
+    'Player A [LM] attempted low excellent pass to Player B [FW]',
+    'Player C [CB] got good assistance, and was in perfect position.',
+    'Player B [FW] made awesome reception, Player C [CB] made good tackle.',
+    'Player B [FW] took control of the ball.',
+    'Goal Attempt',
+    'Player B [FW] made superb shot.',
+    'Player D [GK] was hesitant, and made superb effort to prevent goal.',
+    'The ball bounced off the bar!',
+    'The ball is now free!',
+    'Player C [CB] was close and took control of the ball.',
+    'Player C [CB] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "52' - H - O_PB_START",
+    "52' - H - V_PASS - (80)",
+    "52' - A - V_ASSISTANCE - (60)",
+    "52' - H - V_RECEPTION - (85)",
+    "52' - A - V_TACKLING - (65)",
+    "52' - H - V_SHOT - (75)",
+    "52' - A - V_REFLEX - (70)",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  assert.equal(outcomeOf(match.opportunities[0], 'SHOT'), 'POST');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GK save/rebound handling
 //
@@ -1372,7 +1433,7 @@ test('tacticalStateAt at kickoff returns fully unknown team state and no players
   const match = parseMatch(midTelemetryLines(5, 'H').join('\n'), narrative, HA);
   const state = tacticalStateAt(match, 'home', 0, -1);
   assert.deepEqual(state.teamState, {
-    mentality: null, style: null, middleOrder: null, marking: null, defenceFocus: null,
+    mentality: null, style: null, marking: null, defenceFocus: null,
     preferredSide: null, offside: null, playerOrders: null, aggression: null, arrows: null,
     specialOrders: { isolate: [] },
   });
@@ -1405,20 +1466,69 @@ test('a mentality change updates teamState.mentality from the point it occurs', 
   assert.equal(tacticalStateAt(match, 'home', 90, 999).teamState.mentality, 'DEFENSIVE', 'after the change');
 });
 
-test('a "Change order to X" line updates teamState.middleOrder, never teamState.style', () => {
-  // The source line is ambiguous between the manual's team-wide Style of Play and a
-  // per-zone Player Order (see parser.js's tactical-construct audit comment) — nothing
-  // may write to the field literally named `style` until that ambiguity is resolved
-  // against real evidence.
+// The match page's own pre-match summary card — scraped by scraper.js into
+// meta.initialTactics, never available from narrative/telemetry text (which only ever
+// report CHANGES, not a starting value). See parser.js's initialTeamState comment for
+// which of these five fields then keep updating from narrative events (mentality, style,
+// preferredSide) and which stay at their kickoff value until report wording for a change
+// is observed (marking, defenceFocus).
+const HA_WITH_TACTICS = {
+  ...HA,
+  initialTactics: {
+    home: { mentality: 'NORMAL', style: 'THROUGH_BALLS', marking: 'ZONE', defenceFocus: 'NORMAL', preferredSide: 'NORMAL' },
+    away: { mentality: 'NORMAL', style: 'SHORT_PASSES', marking: 'MAN_TO_MAN', defenceFocus: 'NORMAL', preferredSide: 'NORMAL' },
+  },
+};
+
+test('scraped initial tactics seed teamState at kickoff, per side, independent of narrative events', () => {
+  const narrative = ['Minute 5', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]')].join('\n');
+  const match = parseMatch('', narrative, HA_WITH_TACTICS);
+  const home = tacticalStateAt(match, 'home', 0, -1).teamState;
+  assert.equal(home.mentality, 'NORMAL');
+  assert.equal(home.style, 'THROUGH_BALLS');
+  assert.equal(home.marking, 'ZONE');
+  assert.equal(home.defenceFocus, 'NORMAL');
+  assert.equal(home.preferredSide, 'NORMAL');
+
+  const away = tacticalStateAt(match, 'away', 0, -1).teamState;
+  assert.equal(away.style, 'SHORT_PASSES', 'each side gets its own scraped values, not a shared default');
+  assert.equal(away.marking, 'MAN_TO_MAN');
+});
+
+test('without a scraped initial-tactics summary, kickoff state is fully unknown, same as before this existed', () => {
+  const narrative = ['Minute 5', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]')].join('\n');
+  const match = parseMatch('', narrative, HA); // HA has no initialTactics
+  const state = tacticalStateAt(match, 'home', 0, -1).teamState;
+  assert.equal(state.style, null);
+  assert.equal(state.marking, null);
+});
+
+test('all observed main-tactic changes update their tactical-state fields', () => {
+  const narrative = [
+    'Minute 5', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]'),
+    'Minute 20', 'Home Team - Issued order- Change mentality to ATTACKING',
+    'Minute 30', 'Home Team - Issued order- Change order to LONG_BALLS',
+    'Minute 40', 'Home Team - Issued order- Change preferred side to LEFT_RIGHT',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA_WITH_TACTICS);
+  const state = tacticalStateAt(match, 'home', 90, 999999).teamState;
+  assert.equal(state.mentality, 'ATTACKING', 'mentality updates normally from its own event');
+  assert.equal(state.preferredSide, 'LEFT_RIGHT', 'preferred side updates normally from its own event');
+  assert.equal(state.style, 'LONG_BALLS', 'Change order is FinalWhistle report wording for Style of Play');
+  assert.equal(state.marking, 'ZONE', 'marking has no narrative change-event at all — kickoff value is the only thing this parser can ever say about it');
+  assert.equal(state.defenceFocus, 'NORMAL');
+});
+
+test('a "Change order to X" line is captured as a Style of Play change', () => {
   const narrative = ['Minute 10', 'Home Team - Issued order- Change order to SHORT_PASSES'].join('\n');
   const match = parseMatch('', narrative, HA);
   const state = tacticalStateAt(match, 'home', 90, 999);
-  assert.equal(state.teamState.middleOrder, 'SHORT_PASSES');
-  assert.equal(state.teamState.style, null, 'must stay unpopulated — the mechanic identity is unresolved');
+  assert.equal(state.teamState.style, 'SHORT_PASSES');
 
   const ev = match.tacticalEvents.find(e => e.type === 'STYLE_CHANGE');
-  assert.equal(ev.semanticType, 'MIDDLE_ORDER_CHANGE');
-  assert.equal(ev.interpretation, 'ambiguous');
+  assert.equal(ev.style, 'SHORT_PASSES');
+  assert.equal(Object.hasOwn(ev, 'semanticType'), false);
+  assert.equal(Object.hasOwn(ev, 'interpretation'), false);
 });
 
 test('isolating a player records who and stays zone-null (the narrative names no zone)', () => {
@@ -1655,4 +1765,111 @@ test('phaseIdAt resolves an opportunity to the correct phase on both sides of a 
   ];
   assert.equal(phaseIdAt(phases, 3), 'p0');
   assert.equal(phaseIdAt(phases, 6), 'p1');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Offside, extra time, and preferred side — observed for the first time in a real
+// knockout-cup report that went to extra time (this project's earlier fixtures never
+// exercised any of these three constructs). Wording below is adapted from that real
+// report the same way every other fixture in this file is: exact narrative phrasing
+// preserved, real player/team names replaced with the project's placeholder convention.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('an offside trap that fails does not interrupt the attack or get flagged as unrecognized', () => {
+  const narrative = [
+    'Minute 20', 'Opportunity for Away Team.', 'Midfield',
+    'Player A [RWB] attempted low weak pass to Player B [RM]',
+    'Player C [LB] got excellent assistance, and was ready.',
+    'Player B [RM] made superb reception, Player C [LB] made good tackle.',
+    'Player B [RM] took control of the ball.',
+    'Penalty Box',
+    'Player B [RM] attempted high decent pass to Player D [FW]',
+    'Offside trap was attempted by the defense team.',
+    'Player E [CB] got weak assistance, and was in decent position.',
+    'Player D [FW] made decent reception, Player E [CB] made superb tackle.',
+    'Player E [CB] cleared the ball to safety.',
+    '[0-0]',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  assert.equal(match.validation.unknownNarrativeLines.length, 0, 'the trap marker must not be flagged as unrecognized');
+  const opp = match.opportunities[0];
+  assert.equal(outcomeOf(opp, 'PB_DUEL'), 'CLEARED', 'the trap failing leaves the normal duel outcome untouched');
+});
+
+test('an offside flag ends the attack with an OFFSIDE outcome, not a phantom shot', () => {
+  const narrative = [
+    'Minute 25', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [GK] attempted low excellent pass to Player B [RM]',
+    'Player C [CM] got good assistance, and was in decent position.',
+    'Player B [RM] made decent reception, Player C [CM] made weak tackle.',
+    'Player B [RM] took control of the ball.',
+    'Penalty Box',
+    'Player B [RM] attempted high brilliant pass to Player D [FW]',
+    'Offside trap was attempted by the defense team.',
+    'Player E [CB] got weak assistance, and was ready.',
+    'Assistant referee signaled the offside flag.',
+    '[0-0]',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  assert.equal(match.validation.unknownNarrativeLines.length, 0, 'the flag line must not be flagged as unrecognized');
+  const opp = match.opportunities[0];
+  assert.equal(outcomeOf(opp, 'PB_DUEL'), 'OFFSIDE');
+  assert.equal(stepTypes(opp).includes('SHOT'), false, 'no shot was ever attempted — OFFSIDE must not be treated as a shot terminal');
+});
+
+test('extra-time break markers are recognized even with no "Opportunity for" line between them and the previous opportunity', () => {
+  // Reproduces the exact shape a real report has: an opportunity's score bracket is
+  // immediately followed by a bare "Minute N" line and the break marker, with no new
+  // "Opportunity for" line to flush the previous phase first — the regression this
+  // guards against is these markers getting silently misfiled as unrecognized phase
+  // content against that stale, already-finished phase.
+  const narrative = [
+    'Minute 90', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [CM] got weak assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [CM] made excellent tackle.',
+    'Player C [CM] cleared the ball to safety.',
+    '[1-1]',
+    'Minute 90',
+    'The referee whistled and marked the end of regular play. Players will rest a bit and extra time will be played.',
+    'Minute 105',
+    'End of first extra time, players will change sides and rest a bit before the second extra time starts.',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  const breaks = match.tacticalEvents.filter(ev => ev.type === 'EXTRA_TIME_BREAK');
+  assert.equal(breaks.length, 2);
+  assert.equal(breaks[0].period, 'start');
+  assert.equal(breaks[0].scope, 'match');
+  assert.equal(breaks[1].period, 'halfway');
+});
+
+test('tacticalStateAt clears reported tiredness across an extra-time break, same as half time', () => {
+  const narrative = [
+    'Minute 80', 'Home Team - Player A [CM] looks tired.',
+    'Minute 90',
+    'The referee whistled and marked the end of regular play. Players will rest a bit and extra time will be played.',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  const before = tacticalStateAt(match, 'home', 89, 999);
+  assert.equal(before.players['Player A'].tiredness, 'TIRED');
+  const after = tacticalStateAt(match, 'home', 95, 999);
+  assert.equal(after.players['Player A'].tiredness, null, 'tiredness must not carry across the extra-time break');
+});
+
+test('a preferred-side order is captured, updates teamState, and opens a new tactical phase', () => {
+  const narrative = [
+    'Minute 30', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]'),
+    'Minute 78', 'Home Team - Issued order- Change preferred side to LEFT_RIGHT',
+    'Minute 80', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]'),
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  const ev = match.tacticalEvents.find(e => e.type === 'PREFERRED_SIDE_CHANGE');
+  assert.equal(ev.preferredSide, 'LEFT_RIGHT');
+  assert.equal(ev.teamSide, 'home');
+  assert.equal(tacticalStateAt(match, 'home', 30, 999).teamState.preferredSide, null, 'before the order');
+  assert.equal(tacticalStateAt(match, 'home', 90, 999).teamState.preferredSide, 'LEFT_RIGHT', 'after the order');
+
+  const phases = buildTacticalPhases(match, 'home');
+  assert.equal(phases.length, 2, 'the order must open its own tactical phase boundary');
 });

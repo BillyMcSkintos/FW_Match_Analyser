@@ -17,7 +17,11 @@
 // to be pushed into result.warnings, which put a "matched tag=DIV len=22927" line in
 // the viewer's warning banner on every single successful scrape — confusing for anyone
 // reading it as an actual problem when it's just a diagnostic confirmation.
-const DEBUG = false;
+// `var`, intentionally: background.js injects this whole file again on every Scrape
+// click. Top-level `const` bindings persist in Chrome's isolated tab world and throw an
+// "already been declared" SyntaxError on the second injection; `var` is safely
+// redeclarable while remaining private to the extension's isolated world.
+var DEBUG = false;
 function debug(...args) { if (DEBUG) console.debug('[FW Analyser]', ...args); }
 
 // Validates the scraped page's own URL before trusting anything scraped from it. Only
@@ -49,6 +53,7 @@ function fwScrape() {
     statistics: null,
     homeTeam: null,
     awayTeam: null,
+    initialTactics: null,
     url: location.href,
     scrapedAt: Date.now(),
   };
@@ -78,6 +83,17 @@ function fwScrape() {
     result.awayTeam = teamLinks[1].textContent.trim();
   } else {
     result.errors.push('TEAMS_NOT_FOUND: expected two h5 a.text-decoration-none elements.');
+  }
+
+  // ── 1b. INITIAL TACTICS ───────────────────────────────────────────────────
+  // Pre-match mentality/style/marking/defence-focus/preferred-side summary, shown in its
+  // own card near the top of the match page (present on load, no fast-forward/telemetry
+  // toggle needed — unlike narrative/telemetry below). This is the ONLY source for what a
+  // team's settings actually were at kickoff: parser.js's narrative/telemetry streams
+  // only ever report CHANGES, never a starting value.
+  result.initialTactics = extractInitialTactics();
+  if (!result.initialTactics) {
+    result.warnings.push('INITIAL_TACTICS_NOT_FOUND: pre-match tactics summary not found on page.');
   }
 
   // ── 2. NARRATIVE ─────────────────────────────────────────────────────────
@@ -248,6 +264,45 @@ function extractTelemetryFromDOM() {
       : `${minute}' - ${side} - ${kind}`);
   }
   return tokens.length ? tokens.join('\n') : null;
+}
+
+// Row labels this page actually uses, mapped to the field names parser.js's
+// initialTeamState() already carries (all five were placeholder null-only fields with no
+// scrape source until now — see that function's own comment for how each behaves once
+// seeded). `.tactics-label` identifies the row; the live page stores home's value in
+// `.text-end.fw-semibold` (left/first column) and away's in `.text-start.fw-semibold`
+// (right/second). `.tactic-side` remains only as a compatibility fallback for older or
+// simplified markup — matching the page's own left-team/right-team layout, not an
+// assumed ordering.
+// See DEBUG above: this file is deliberately safe to evaluate repeatedly in one tab.
+var INITIAL_TACTIC_FIELDS = {
+  'Team Mentality': 'mentality', 'Style of Play': 'style',
+  'Marking': 'marking', 'Defence Focus': 'defenceFocus', 'Preferred Side': 'preferredSide',
+};
+// "Through balls" → "THROUGH_BALLS", matching the enum-like convention every other
+// tactical value in this codebase already uses (MENTALITY_CHANGE/STYLE_CHANGE's captured
+// values come from all-caps "Issued order-" text, not prose like this page uses) — kept
+// as a display-agnostic token rather than the page's own casing/wording, which reads
+// naturally in isolation but wouldn't match anything else in the app if left as prose.
+function enumify(text) {
+  if (typeof text !== 'string') return null;
+  const token = text.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return token || null;
+}
+function extractInitialTactics() {
+  const tactics = { home: {}, away: {} };
+  let found = false;
+  for (const label of document.querySelectorAll('.tactics-label')) {
+    const field = INITIAL_TACTIC_FIELDS[label.textContent.trim()];
+    if (!field) continue;
+    const row = label.parentElement;
+    // The live match page uses `.text-end.fw-semibold` / `.text-start.fw-semibold`.
+    // Keep `.tactic-side` as a compatibility fallback for older/simplified markup.
+    tactics.home[field] = enumify(row?.querySelector('.text-end.fw-semibold, .text-end.tactic-side')?.textContent);
+    tactics.away[field] = enumify(row?.querySelector('.text-start.fw-semibold, .text-start.tactic-side')?.textContent);
+    found = true;
+  }
+  return found ? tactics : null;
 }
 
 function extractStatsTable(tableEl) {

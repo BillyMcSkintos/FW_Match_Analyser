@@ -1,0 +1,41 @@
+Minute 10
+Opportunity for Home Team.
+Midfield
+Player A [GK] attempted low excellent pass to Player B [RM]
+Player C [CM] got good assistance, and was in decent position.
+Player B [RM] made decent reception, Player C [CM] made weak tackle.
+Player B [RM] took control of the ball.
+Penalty Box
+Player B [RM] attempted high brilliant pass to Player D [FW]
+Offside trap was attempted by the defense team.
+Player E [CB] got weak assistance, and was ready.
+Assistant referee signaled the offside flag.
+[0-0]
+Minute 78
+Home Team - Issued order- Change preferred side to LEFT_RIGHT
+Minute 90
+Opportunity for Home Team.
+Midfield
+Player A [RB] attempted low good pass to Player B [CM]
+Player C [CM] got weak assistance, and was in decent position.
+Player B [CM] made weak reception, Player C [CM] made excellent tackle.
+Player C [CM] cleared the ball to safety.
+[0-0]
+Minute 90
+The referee whistled and marked the end of regular play. Players will rest a bit and extra time will be played.
+Minute 105
+End of first extra time, players will change sides and rest a bit before the second extra time starts.
+Minute 110
+Opportunity for Away Team.
+Midfield
+Player F [RWB] attempted low weak pass to Player G [RM]
+Player H [LB] got excellent assistance, and was ready.
+Player G [RM] made superb reception, Player H [LB] made good tackle.
+Player G [RM] took control of the ball.
+Penalty Box
+Player G [RM] attempted high decent pass to Player I [FW]
+Offside trap was attempted by the defense team.
+Player J [CB] got weak assistance, and was in decent position.
+Player I [FW] made decent reception, Player J [CB] made superb tackle.
+Player J [CB] cleared the ball to safety.
+[0-0]
