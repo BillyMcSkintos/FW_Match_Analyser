@@ -59,7 +59,7 @@ select:disabled{opacity:.4}
 .meta-assist-label{flex:0 0 auto;font-size:9px;font-weight:700;color:#5a6f8c;text-transform:uppercase;letter-spacing:1px;padding-top:2px}
 
 /* ── Tabs ── */
-.tabs{display:flex;border-bottom:1px solid #1a2540;flex-shrink:0;padding:0 10px}
+.tabs{display:flex;border-bottom:1px solid #1a2540;flex-shrink:0;padding:0 10px;overflow-x:auto;scrollbar-width:thin}
 .tab{padding:6px 10px;font-size:12px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;color:#8a9ab0}
 .tab.active{border-bottom-color:#6fb3d9;color:#e4e9f5}
 .opp-summary{display:flex;align-items:center;gap:6px;font-size:12px;color:#8a9ab0;padding:4px 10px;background:#060d18;border-bottom:1px solid #1a2540;flex-shrink:0;letter-spacing:.5px}
@@ -177,6 +177,30 @@ select:disabled{opacity:.4}
 .dist-title:first-child{margin-top:2px;padding-top:0;border-top:none}
 .qt-hint{font-size:10px;color:#5a6f8c;margin-bottom:7px;line-height:1.5}
 .no-data{display:flex;align-items:center;justify-content:center;flex:1;color:#8a9ab0;font-size:14px}
+
+/* ── Playback ── */
+.playback-shell{display:flex;flex-direction:column;gap:10px;padding:12px;overflow-y:auto}
+.playback-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.playback-controls label{display:flex;align-items:center;gap:4px;font-size:11px;color:#8a9ab0;text-transform:uppercase;letter-spacing:.5px}
+.playback-seek{width:100%;accent-color:#6fb3d9}
+.playback-progress{font:11px monospace;color:#5a6f8c;text-align:right}
+.playback-card{border:1px solid #1a2540;border-left:3px solid #6fb3d9;border-radius:5px;background:#060d18;padding:12px;min-height:112px}
+.playback-card.away{border-left-color:#e0925c}
+.playback-kicker{font-size:10px;color:#6fb3d9;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px}
+.playback-card.away .playback-kicker{color:#e0925c}
+.playback-title{font-size:17px;font-weight:700;color:#e4e9f5;margin-bottom:5px}
+.playback-description{font-size:13px;line-height:1.5;color:#9fb0c4}
+.playback-help{font-size:11px;line-height:1.5;color:#5a6f8c;border-top:1px solid #1a2540;padding-top:9px}
+.playback-vignette{position:absolute;z-index:3;top:22px;left:22px;right:410px;display:none;justify-content:center;pointer-events:none}
+.playback-vignette.visible{display:flex}
+.playback-vignette-card{min-width:210px;max-width:420px;text-align:center;padding:10px 18px;border:1px solid #334563;border-radius:8px;background:rgba(4,9,18,.92);box-shadow:0 8px 22px rgba(0,0,0,.42);animation:pb-vignette-in .28s ease-out}
+.playback-vignette-icon{font-size:30px;line-height:1.2;color:#e8c468}
+.playback-vignette-title{font-size:14px;font-weight:700;color:#e4e9f5}
+.playback-vignette-detail{font-size:11px;color:#8a9ab0;margin-top:2px}
+.pb-svg-pulse{fill:none;stroke:#e8c468;stroke-width:3;transform-box:fill-box;transform-origin:center;animation:pb-pulse 1s ease-out infinite}
+@keyframes pb-vignette-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pb-pulse{0%{opacity:.9;transform:scale(.55)}100%{opacity:0;transform:scale(1.8)}}
+@media (prefers-reduced-motion:reduce){.playback-vignette-card,.pb-svg-pulse,.tl-goal-glow{animation:none!important}.tl-marker .tl-dot,.opp-row{transition:none!important}}
 </style>
 </head>
 <body>
@@ -201,6 +225,7 @@ select:disabled{opacity:.4}
     <div id="errors"></div>
     <div class="tabs" id="tabs" style="display:none">
       <div class="tab active" data-tab="opps">Opportunities</div>
+      <div class="tab" data-tab="playback">Playback</div>
       <div class="tab" data-tab="stats">Statistics</div>
       <div class="tab" data-tab="squad">Tactics</div>
       <div class="tab" data-tab="analysis">Analysis</div>
@@ -225,6 +250,22 @@ select:disabled{opacity:.4}
         <div class="leg-item">PK = penalty spot</div>
       </div>
     </div>
+    <div id="panel-playback" class="panel">
+      <div class="playback-shell">
+        <div class="playback-controls" aria-label="Playback controls">
+          <button id="pb-restart" title="Restart playback">↺</button>
+          <button id="pb-prev" title="Previous moment">◀</button>
+          <button id="pb-play" class="primary" aria-label="Play match">Play</button>
+          <button id="pb-next" title="Next moment">▶</button>
+          <label>Speed <select id="pb-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+          <label>Scope <select id="pb-scope"><option value="match">Match</option><option value="selected">Selected opportunity</option></select></label>
+        </div>
+        <input id="pb-seek" class="playback-seek" type="range" min="0" max="0" value="0" aria-label="Playback position">
+        <div id="pb-progress" class="playback-progress">0 / 0</div>
+        <div id="playback-card" class="playback-card" aria-live="polite"><div class="no-data">Scrape a match to begin.</div></div>
+        <div class="playback-help">Playback follows the parsed narrative in order. Player positions and movement paths are schematic because FinalWhistle reports roles and actions, not exact pitch coordinates.</div>
+      </div>
+    </div>
     <div id="panel-stats" class="panel"><div class="no-data">No statistics.</div></div>
     <div id="panel-squad" class="panel"><div class="no-data">No match data.</div></div>
     <div id="panel-analysis" class="panel"><div class="no-data">No match data.</div></div>
@@ -236,6 +277,7 @@ select:disabled{opacity:.4}
   <div class="right" id="pitch-panel">
     <div class="pitch-wrap">
       <div id="pitch-container" style="height:100%;width:100%;display:flex;align-items:center;justify-content:center"></div>
+      <div id="playback-vignette" class="playback-vignette" aria-hidden="true"></div>
       <div class="right-overlay">
         <div class="pass-summary" id="pass-summary" style="display:none"></div>
         <div id="raw-panel" class="raw-panel" style="display:none"><pre id="raw-text"></pre></div>
@@ -246,6 +288,7 @@ select:disabled{opacity:.4}
 <script src="utils.js"></script>
 <script src="parser.js"></script>
 <script src="analytics.js"></script>
+<script src="playback.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

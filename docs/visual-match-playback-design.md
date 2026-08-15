@@ -1,6 +1,7 @@
 # Visual Match Playback — Discovery and Design
 
-Status: design proposal; no playback implementation or generated artwork yet.
+Status: pitch-first MVP implemented on the playback feature branch; generated bitmap
+artwork remains a separately reviewable future enhancement.
 
 This document treats `parser.js` and the repository's observed fixtures as the source of
 truth. Playback is a presentation adapter over the existing parsed match model. It must

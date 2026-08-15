@@ -11,6 +11,14 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 
 ## [Unreleased]
 
+### Added
+- A **Playback** tab with match/selected-opportunity scope, play/pause, step, seek,
+  restart, and speed controls.
+- A pure playback cue adapter that preserves parser order, counter-attack ownership,
+  tactical events, recoveries, and arbitrarily repeated shots after goalkeeper rebounds.
+- Progressive schematic pitch highlighting, significant-moment vignettes, timeline
+  seeking, and reduced-motion support without external assets or network requests.
+
 ## [0.5.0] — Firefox compatibility
 
 ### Added

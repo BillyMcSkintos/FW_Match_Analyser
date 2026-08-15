@@ -4,8 +4,8 @@
   "version": "0.5.0",
   "description": "FinalWhistle Match Analyser browser extension",
   "scripts": {
-    "test": "node --test parser.test.js viewer.test.js scraper.test.js analytics.test.js smoke.test.js integration.test.js static-audit.test.js background.test.js",
-    "check": "node --check parser.js && node --check analytics.js && node --check viewer.js && node --check scraper.js && node --check background.js && node --check utils.js",
+    "test": "node --test parser.test.js viewer.test.js scraper.test.js analytics.test.js playback.test.js smoke.test.js integration.test.js static-audit.test.js background.test.js",
+    "check": "node --check parser.js && node --check analytics.js && node --check playback.js && node --check viewer.js && node --check scraper.js && node --check background.js && node --check utils.js",
     "lint:firefox": "web-ext lint --source-dir .",
     "verify": "npm run test && npm run check && npm run lint:firefox"
   },

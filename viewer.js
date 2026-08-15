@@ -274,8 +274,15 @@ function stepsToChain(opp) {
   const midDuel   = primaryMidPair?.duel || find('MID_DUEL');
   const pbPass    = find('PB_PASS');
   const pbDuel    = find('PB_DUEL');
-  const shot      = find('SHOT');
-  const fkShot    = find('FK_SHOT');
+  // Playback reveals a rebound sequence one step at a time. Its partial opportunity
+  // carries the exact source-step index to focus, so a later shot must replace the
+  // usual first-shot summary instead of visually jumping back to the initial attempt.
+  const focusedStep = Number.isInteger(opp.playbackFocusStepIndex)
+    ? steps[opp.playbackFocusStepIndex] : null;
+  const focusedShot = focusedStep && ['SHOT', 'FK_SHOT'].includes(focusedStep.stepType) &&
+    (!isCA || focusedStep.isCA) ? focusedStep : null;
+  const shot      = focusedShot?.stepType === 'SHOT' ? focusedShot : find('SHOT');
+  const fkShot    = focusedShot?.stepType === 'FK_SHOT' ? focusedShot : find('FK_SHOT');
   const sp        = find('SP_PASS');
 
   const effectiveMid  = midDuel;
@@ -1780,6 +1787,10 @@ let _teamFilter   = 'both'; // 'both' | 'home' | 'away' — which opportunities 
 // parameter goes out of scope once render() returns — JPG export needs it later (for the
 // filename and the export header), so it's kept here rather than re-threaded everywhere.
 let _lastRenderedScrape = null;
+const _playbackState = {
+  cues: [], index: 0, playing: false, speed: 1, scope: 'match', timer: null,
+  reducedMotion: false,
+};
 
 // The pitch is a static shell of layered <g> groups, rebuilt only when what they show
 // actually changes (a fresh scrape, or a Home/Away/Both filter switch — both go through
@@ -2094,6 +2105,7 @@ function render(scrape) {
     $('opp-list').innerHTML = `<div class="no-data">${scrape.narrative ? 'Parse failed.' : 'No match data.'}</div>`;
     $('timeline-wrap').style.display = 'none';
     $('timeline-wrap').innerHTML = '';
+    resetPlaybackForMatch();
     return;
   }
 
@@ -2118,6 +2130,7 @@ function render(scrape) {
     _hFlowData = buildBaseFlow(opportunities, 'home');
     _aFlowData = buildBaseFlow(opportunities, 'away');
     buildBasePitch();
+    resetPlaybackForMatch();
   } catch(e) {
     showErrors([...(scrape.errors||[]), 'PITCH_ERROR: '+e.message]);
   }
@@ -2277,6 +2290,10 @@ function clickOpp(idx) {
 // for the pitch highlight/chain detail, clickOpp for the expand + selection state — rather
 // than building a second, parallel selection system just for the timeline.
 function clickTimelineMarker(idx) {
+  if (isPlaybackTabActive()) {
+    seekPlaybackToOpportunity(idx);
+    return;
+  }
   // The pitch/chain-detail panel on the right isn't tab-gated — it's always visible
   // regardless of which left-hand tab is active — so this always updates it, the same
   // "normal" hover behavior a row click gets on the Opportunities tab.
@@ -2695,12 +2712,218 @@ async function saveJpg() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PLAYBACK
+// ─────────────────────────────────────────────────────────────────────────────
+// The parser remains the only source of football events. Playback is deliberately a
+// presentation adapter over its normalized steps: roles map to schematic pitch anchors,
+// while exact coordinates, save direction and off-ball movement are never invented.
+function playbackCueTitle(cue) {
+  if (!cue) return 'No playback available';
+  if (cue.kind === 'opportunity.start') return cue.variant === 'counter-attack' ? 'Counter-attack begins' : 'Opportunity begins';
+  if (cue.kind === 'flow.pass') return `${cue.actor?.name || 'Player'} → ${cue.target?.name || 'teammate'}`;
+  if (cue.kind === 'flow.duel') return `${cue.actor?.name || 'Attacker'} contests the ball`;
+  if (cue.kind === 'flow.dribble') return `${cue.actor?.name || 'Player'} carries the ball`;
+  if (cue.kind === 'flow.recovery') return `${cue.actor?.name || 'Player'} recovers the ball`;
+  if (cue.kind === 'shot.strike') return `${cue.actor?.name || 'Player'} shoots`;
+  if (cue.kind === 'shot.resolve') return ({ goal: 'Goal!', save: 'Saved', fumble: 'Goalkeeper fumbles', woodwork: 'Off the woodwork', miss: 'Shot missed', blocked: 'Shot blocked' })[cue.variant] || 'Shot resolved';
+  if (cue.kind === 'incident.card') return 'Yellow card';
+  if (cue.kind === 'match.break') return cue.variant === 'half-time' ? 'Half-time' : 'Extra-time break';
+  if (cue.kind === 'match.event') return String(cue.variant || 'match event').replaceAll('-', ' ');
+  if (cue.kind === 'opportunity.end') return 'Opportunity complete';
+  return 'Match moment';
+}
+
+function playbackCueDescription(cue) {
+  if (!cue) return 'Scrape or load a match to create playback.';
+  const q = cue.quality?.label ? `${cue.quality.label} ` : '';
+  if (cue.kind === 'opportunity.start') return `${cue.team || 'The attacking team'} starts an opportunity${cue.minute != null ? ` in minute ${cue.minute}` : ''}.`;
+  if (cue.kind === 'flow.pass') return `${q}${cue.passHeight || ''} pass toward ${cue.target?.name || 'a teammate'}${cue.outcome ? ` — ${cue.outcome.toLowerCase()}` : ''}.`.replace(/\s+/g, ' ');
+  if (cue.kind === 'flow.duel') return `${cue.opponent?.name ? `Against ${cue.opponent.name}. ` : ''}${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : 'The contest continues'}.`;
+  if (cue.kind === 'flow.dribble') return `${cue.opponent?.name ? `Challenged by ${cue.opponent.name}. ` : ''}${cue.outcome ? cue.outcome.toLowerCase() : ''}`;
+  if (cue.kind === 'flow.recovery') return cue.variant === 'recovered-and-cleared' ? 'The loose ball is recovered and cleared.' : 'The loose ball remains live and is recovered.';
+  if (cue.kind === 'shot.strike') return `${q}${cue.variant === 'standard' ? '' : `${cue.variant.replaceAll('-', ' ')} `}attempt${cue.goalkeeper?.name ? ` against ${cue.goalkeeper.name}` : ''}.`;
+  if (cue.kind === 'shot.resolve') return `${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : cue.variant}${cue.goalkeeperQuality?.label ? ` — ${cue.goalkeeperQuality.label} goalkeeper effort` : ''}.`;
+  if (cue.kind === 'incident.card') return `${cue.actor?.name || 'A player'} is booked.`;
+  if (cue.kind === 'match.event') {
+    const people = [cue.actor?.name, cue.secondaryActor?.name].filter(Boolean).join(' → ');
+    return [people, cue.value].filter(Boolean).join(' · ') || 'A reported match event.';
+  }
+  if (cue.kind === 'match.break') return 'Playback pauses at the reported match break.';
+  if (cue.kind === 'opportunity.end') return `${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : 'The sequence ends'}.`;
+  return '';
+}
+
+function playbackVignetteHtml(cue) {
+  const significant = cue && (cue.kind.startsWith('shot.') || cue.kind === 'incident.card' || cue.kind === 'match.break');
+  if (!significant) return '';
+  const icon = cue.kind === 'incident.card' ? '▮' : cue.kind === 'match.break' ? 'Ⅱ' : cue.kind === 'shot.resolve' && cue.variant === 'goal' ? '⚽' : '●';
+  return `<div class="playback-vignette-card"><div class="playback-vignette-icon">${icon}</div>` +
+    `<div class="playback-vignette-title">${escapeHtml(playbackCueTitle(cue))}</div>` +
+    `<div class="playback-vignette-detail">${escapeHtml(playbackCueDescription(cue))}</div></div>`;
+}
+
+function playbackCueOverlay(cue) {
+  if (!cue?.actor?.position || !cue.attackingSide) return '';
+  const point = pXY(cue.actor.position, cue.attackingSide);
+  return `<circle class="pb-svg-pulse" cx="${point.x}" cy="${point.y}" r="15"/>`;
+}
+
+function isPlaybackTabActive() {
+  return document.querySelector('.tab.active')?.dataset.tab === 'playback';
+}
+
+function pbTextElement(className, text) {
+  const element = document.createElement('div');
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
+  const cue = _playbackState.cues[_playbackState.index] || null;
+  const card = $('playback-card');
+  const progress = $('pb-progress');
+  const seek = $('pb-seek');
+  const play = $('pb-play');
+  if (seek) {
+    seek.max = String(Math.max(0, _playbackState.cues.length - 1));
+    seek.value = String(Math.min(_playbackState.index, Math.max(0, _playbackState.cues.length - 1)));
+    seek.disabled = !_playbackState.cues.length;
+  }
+  if (progress) progress.textContent = _playbackState.cues.length ? `${_playbackState.index + 1} / ${_playbackState.cues.length}` : '0 / 0';
+  if (play) {
+    play.textContent = _playbackState.playing ? 'Pause' : 'Play';
+    play.setAttribute('aria-label', _playbackState.playing ? 'Pause match' : 'Play match');
+    play.disabled = !_playbackState.cues.length;
+  }
+  if (card) {
+    card.classList.toggle('away', cue?.attackingSide === 'away' || cue?.teamSide === 'away');
+    if (cue) card.replaceChildren(
+      pbTextElement('playback-kicker', `${cue.minute != null ? `${cue.minute}′ · ` : ''}${cue.kind.replace('.', ' ')}`),
+      pbTextElement('playback-title', playbackCueTitle(cue)),
+      pbTextElement('playback-description', playbackCueDescription(cue)),
+    );
+    else card.replaceChildren(pbTextElement('no-data', 'No parsed moments available for playback.'));
+  }
+  const vignette = $('playback-vignette');
+  if (vignette) {
+    const significant = cue && (cue.kind.startsWith('shot.') || cue.kind === 'incident.card' || cue.kind === 'match.break');
+    if (significant) {
+      const icon = cue.kind === 'incident.card' ? '▮' : cue.kind === 'match.break' ? 'Ⅱ' : cue.kind === 'shot.resolve' && cue.variant === 'goal' ? '⚽' : '●';
+      const vignetteCard = pbTextElement('playback-vignette-card', '');
+      vignetteCard.replaceChildren(
+        pbTextElement('playback-vignette-icon', icon),
+        pbTextElement('playback-vignette-title', playbackCueTitle(cue)),
+        pbTextElement('playback-vignette-detail', playbackCueDescription(cue)),
+      );
+      vignette.replaceChildren(vignetteCard);
+    } else vignette.replaceChildren();
+    vignette.classList.toggle('visible', paintPitch && !!significant);
+  }
+  if (!paintPitch || !cue) return;
+  const partial = playbackPartialOpportunity(_match, cue);
+  const chain = partial?.steps?.length ? renderHighlightChain(partial) : '';
+  setHighlight(chain + playbackCueOverlay(cue), !!(chain || cue.actor));
+  $('pass-summary').style.display = 'none';
+  $('raw-panel').style.display = 'none';
+  markTimelineSelected(cue.opportunityIndex);
+}
+
+function clearPlaybackTimer() {
+  if (_playbackState.timer !== null) clearTimeout(_playbackState.timer);
+  _playbackState.timer = null;
+}
+
+function pausePlayback() {
+  clearPlaybackTimer();
+  _playbackState.playing = false;
+  renderPlaybackCurrentCue(false);
+}
+
+function schedulePlaybackAdvance() {
+  clearPlaybackTimer();
+  if (!_playbackState.playing || !_playbackState.cues.length) return;
+  const cue = _playbackState.cues[_playbackState.index];
+  const normalDelay = (cue?.durationMs || 600) / _playbackState.speed;
+  const delay = _playbackState.reducedMotion ? Math.min(150, normalDelay) : normalDelay;
+  _playbackState.timer = setTimeout(() => {
+    if (_playbackState.index >= _playbackState.cues.length - 1) {
+      pausePlayback();
+      renderPlaybackCurrentCue(true);
+      return;
+    }
+    _playbackState.index++;
+    renderPlaybackCurrentCue(true);
+    schedulePlaybackAdvance();
+  }, delay);
+}
+
+function togglePlayback() {
+  if (_playbackState.playing) { pausePlayback(); return; }
+  if (!_playbackState.cues.length) return;
+  if (_playbackState.index >= _playbackState.cues.length - 1) _playbackState.index = 0;
+  _playbackState.playing = true;
+  renderPlaybackCurrentCue(true);
+  schedulePlaybackAdvance();
+}
+
+function seekPlayback(index) {
+  if (!_playbackState.cues.length) return;
+  _playbackState.index = Math.max(0, Math.min(_playbackState.cues.length - 1, Number(index) || 0));
+  renderPlaybackCurrentCue(true);
+  if (_playbackState.playing) schedulePlaybackAdvance();
+}
+
+function seekPlaybackToOpportunity(opportunityIndex) {
+  const cueIndex = _playbackState.cues.findIndex(c => c.opportunityIndex === opportunityIndex);
+  if (cueIndex >= 0) { seekPlayback(cueIndex); return; }
+  // In selected-opportunity scope, a different timeline marker is an explicit new
+  // selection even though its cues are not in the current narrow queue.
+  if (_playbackState.scope === 'selected' && _match?.opportunities?.[opportunityIndex]) {
+    clearPlaybackTimer();
+    _playbackState.playing = false;
+    _playbackState.cues = buildPlaybackCues(_match, { opportunityIndex });
+    _playbackState.index = 0;
+    renderPlaybackCurrentCue(true);
+  }
+}
+
+function rebuildPlaybackCues() {
+  clearPlaybackTimer();
+  _playbackState.playing = false;
+  const selected = getPinnedIdx();
+  const currentOpportunity = _playbackState.cues[_playbackState.index]?.opportunityIndex;
+  const opportunityIndex = _playbackState.scope === 'selected'
+    ? (selected ?? currentOpportunity ?? 0) : null;
+  _playbackState.cues = _match ? buildPlaybackCues(_match,
+    opportunityIndex === null ? {} : { opportunityIndex }) : [];
+  _playbackState.index = 0;
+  renderPlaybackCurrentCue(isPlaybackTabActive());
+}
+
+function resetPlaybackForMatch() {
+  _playbackState.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  _playbackState.scope = $('pb-scope')?.value || 'match';
+  _playbackState.speed = Number($('pb-speed')?.value) || 1;
+  rebuildPlaybackCues();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────────────────────
 function activateTab(name) {
+  const wasPlayback = isPlaybackTabActive();
+  if (wasPlayback && name !== 'playback') pausePlayback();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   $(`panel-${name}`)?.classList.add('active');
+  if (name === 'playback') renderPlaybackCurrentCue(true);
+  else {
+    $('playback-vignette')?.classList.remove('visible');
+    const pinnedIdx = getPinnedIdx();
+    if (pinnedIdx !== null && _match) showPitchDetail(_match.opportunities[pinnedIdx], true);
+    else { setHighlight('', false); $('pass-summary').style.display = 'none'; $('raw-panel').style.display = 'none'; }
+  }
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
@@ -2708,12 +2931,14 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 // OPP LIST EVENT DELEGATION  (inline handlers blocked by extension CSP)
 // ─────────────────────────────────────────────────────────────────────────────
 document.addEventListener('mouseover', e => {
+  if (isPlaybackTabActive()) return;
   const row = e.target.closest('.opp-row');
   if (row?.dataset.idx !== undefined) { hoverOpp(parseInt(row.dataset.idx)); return; }
   const marker = e.target.closest('.tl-marker');
   if (marker?.dataset.idx !== undefined) hoverOpp(parseInt(marker.dataset.idx));
 });
 document.addEventListener('mouseout', e => {
+  if (isPlaybackTabActive()) return;
   const row = e.target.closest('.opp-row');
   if (row && !row.contains(e.relatedTarget)) { unhoverOpp(); return; }
   const marker = e.target.closest('.tl-marker');
@@ -2738,6 +2963,20 @@ document.addEventListener('click', e => {
 // ─────────────────────────────────────────────────────────────────────────────
 // BUTTONS
 // ─────────────────────────────────────────────────────────────────────────────
+$('pb-play').addEventListener('click', togglePlayback);
+$('pb-prev').addEventListener('click', () => seekPlayback(_playbackState.index - 1));
+$('pb-next').addEventListener('click', () => seekPlayback(_playbackState.index + 1));
+$('pb-restart').addEventListener('click', () => seekPlayback(0));
+$('pb-seek').addEventListener('input', e => seekPlayback(Number(e.target.value)));
+$('pb-speed').addEventListener('change', e => {
+  _playbackState.speed = Number(e.target.value) || 1;
+  if (_playbackState.playing) schedulePlaybackAdvance();
+});
+$('pb-scope').addEventListener('change', e => {
+  _playbackState.scope = e.target.value === 'selected' ? 'selected' : 'match';
+  rebuildPlaybackCues();
+});
+
 $('btn-scrape').addEventListener('click', async () => {
   $('status').textContent = 'Scraping…'; $('btn-scrape').disabled = true;
   try {
@@ -2759,6 +2998,7 @@ $('btn-load').addEventListener('click', async () => {
 $('btn-clear').addEventListener('click', async () => {
   await ext.storage.local.remove('lastScrape');
   _match = null;
+  resetPlaybackForMatch();
   _lastRenderedScrape = null;
   $('status').textContent = 'Cleared';
   ['errors','meta-bar','opp-summary','timeline-wrap'].forEach(id => { const e=$( id); if(e){ e.innerHTML=''; e.style.display=''; }});
