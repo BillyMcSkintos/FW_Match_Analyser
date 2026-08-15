@@ -9,19 +9,19 @@
  */
 
 const PB_CUE_DURATIONS = Object.freeze({
-  opportunityStart: 1800,
-  pass: 3000,
-  duel: 2800,
-  dribble: 3000,
-  shotStrike: 3200,
-  longShotStrike: 3600,
-  shotResolve: 3200,
-  goal: 4000,
-  recovery: 2800,
-  discipline: 3000,
-  tactical: 3200,
-  break: 4000,
-  opportunityEnd: 1800,
+  opportunityStart: 9000,
+  pass: 15000,
+  duel: 14000,
+  dribble: 15000,
+  shotStrike: 16000,
+  longShotStrike: 18000,
+  shotResolve: 16000,
+  goal: 20000,
+  recovery: 14000,
+  discipline: 15000,
+  tactical: 16000,
+  break: 20000,
+  opportunityEnd: 9000,
 });
 
 const PB_PASS_STEPS = new Set(['START_PASS', 'PB_PASS', 'SP_PASS', 'FK_PASS']);
@@ -231,6 +231,7 @@ function pbTacticalCue(event, tacticalEventIndex) {
     kind: isBreak ? 'match.break' : 'match.event',
     variant: String(event.type || 'unknown').toLowerCase().replaceAll('_', '-'),
     eventType: event.type || null,
+    rawText: event.rawText || null,
     teamSide: event.teamSide || null,
     actor: pbPlayer(event.player || event.target || event.playerOut),
     secondaryActor: pbPlayer(event.playerIn),

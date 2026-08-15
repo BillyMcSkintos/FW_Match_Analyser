@@ -1789,7 +1789,7 @@ let _teamFilter   = 'both'; // 'both' | 'home' | 'away' — which opportunities 
 let _lastRenderedScrape = null;
 const _playbackState = {
   cues: [], index: 0, playing: false, speed: 1, scope: 'match', timer: null,
-  reducedMotion: false,
+  reducedMotion: false, narrativeKey: null,
 };
 
 // The pitch is a static shell of layered <g> groups, rebuilt only when what they show
@@ -2171,12 +2171,16 @@ function showPitchDetail(opp, dim) {
   const ps = $('pass-summary');
   ps.style.display = 'block';
   ps.innerHTML = buildPassSummary(opp);
-  if (opp.rawLines?.length) {
-    $('raw-panel').style.display = 'block';
-    $('raw-text').innerHTML = opp.rawLines
-      .map(l => colorizeNarrativeLine(l, _match.playerRegistry))
-      .join('\n');
-  }
+  showNarrativeLines(opp.rawLines);
+}
+
+function showNarrativeLines(lines) {
+  const panel = $('raw-panel');
+  if (!lines?.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  $('raw-text').innerHTML = lines
+    .map(line => colorizeNarrativeLine(line, _match?.playerRegistry))
+    .join('\n');
 }
 
 function hoverOpp(idx) {
@@ -2807,6 +2811,23 @@ function pbTextElement(className, text) {
   return element;
 }
 
+function showPlaybackNarrative(cue) {
+  if (!cue) { _playbackState.narrativeKey = null; showNarrativeLines([]); return; }
+  const key = Number.isInteger(cue.opportunityIndex)
+    ? `opportunity-${cue.opportunityIndex}` : `event-${cue.tacticalEventIndex}`;
+  // Every cue within one opportunity shares the same source narrative. Avoid replacing
+  // the <pre> on every step so a user's scroll position remains stable while arrows play.
+  if (_playbackState.narrativeKey === key) {
+    $('raw-panel').style.display = 'block';
+    return;
+  }
+  const lines = Number.isInteger(cue.opportunityIndex)
+    ? (_match?.opportunities?.[cue.opportunityIndex]?.rawLines || [])
+    : (cue.rawText ? [cue.rawText] : []);
+  _playbackState.narrativeKey = key;
+  showNarrativeLines(lines);
+}
+
 function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
   const cue = _playbackState.cues[_playbackState.index] || null;
   const card = $('playback-card');
@@ -2853,7 +2874,7 @@ function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
   const chain = partial?.steps?.length ? renderHighlightChain(partial) : '';
   setHighlight(chain + playbackStepArrow(cue) + playbackCueOverlay(cue), !!(chain || cue.actor));
   $('pass-summary').style.display = 'none';
-  $('raw-panel').style.display = 'none';
+  showPlaybackNarrative(cue);
   markTimelineSelected(cue.opportunityIndex);
 }
 
@@ -2930,6 +2951,7 @@ function rebuildPlaybackCues() {
 }
 
 function resetPlaybackForMatch() {
+  _playbackState.narrativeKey = null;
   _playbackState.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   _playbackState.scope = $('pb-scope')?.value || 'match';
   _playbackState.speed = Number($('pb-speed')?.value) || 1;

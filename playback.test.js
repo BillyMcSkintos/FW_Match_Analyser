@@ -74,6 +74,13 @@ test('string-valued tactical actors remain visible in playback', () => {
   assert.equal(cues[0].actor.name, 'Named Player');
 });
 
+test('tactical cues preserve their observed narrative line for playback', () => {
+  const cues = buildPlaybackCues({ opportunities: [], tacticalEvents: [
+    { type: 'MENTALITY_CHANGE', minute: 8, sequence: 1, rawText: 'Home - Change mentality to ATTACKING' },
+  ] });
+  assert.equal(cues[0].rawText, 'Home - Change mentality to ATTACKING');
+});
+
 test('opportunity scope excludes other opportunities and match-level tactical events', () => {
   const match = fixture('open-play');
   const cues = buildPlaybackCues(match, { opportunityIndex: 1 });
@@ -105,6 +112,7 @@ test('cue model does not invent coordinates, save direction, cross or red-card f
 test('normal-speed cues remain visible long enough to read each action', () => {
   const cues = buildPlaybackCues(fixture('open-play'), { opportunityIndex: 0 });
   const actions = cues.filter(c => ['flow.pass', 'flow.duel', 'shot.strike', 'shot.resolve'].includes(c.kind));
-  assert.equal(actions.every(c => c.durationMs >= 2800), true);
-  assert.equal(cues.find(c => c.kind === 'shot.resolve' && c.variant === 'goal').durationMs, 4000);
+  assert.equal(actions.every(c => c.durationMs >= 14000), true);
+  assert.equal(cues.find(c => c.kind === 'flow.pass').durationMs, 15000);
+  assert.equal(cues.find(c => c.kind === 'shot.resolve' && c.variant === 'goal').durationMs, 20000);
 });

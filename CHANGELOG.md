@@ -20,6 +20,8 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   seeking, and reduced-motion support without external assets or network requests.
 - Readable normal-speed timing and a dedicated directional arrow for each parsed action
   before playback advances to the next step.
+- Five-times-slower 1× timing and a persistent, colorized source-narrative panel during
+  playback, including the observed raw line for tactical events.
 
 ## [0.5.0] — Firefox compatibility
 

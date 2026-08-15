@@ -807,6 +807,26 @@ function loadViewerContextWithStableElements() {
   return { context, elements };
 }
 
+test('playback keeps the source opportunity narrative visible beside the pitch', () => {
+  const { context: ctx, elements } = loadViewerContextWithStableElements();
+  vm.runInContext(`_match = {
+    playerRegistry: {},
+    opportunities: [{ rawLines: ['Minute 1', 'Opportunity for Home Team.', 'Player A [FW] made good shot.'] }]
+  }; _playbackState.narrativeKey = null;`, ctx);
+  ctx.showPlaybackNarrative({ opportunityIndex: 0, tacticalEventIndex: null });
+  assert.equal(elements.get('raw-panel').style.display, 'block');
+  assert.match(elements.get('raw-text').innerHTML, /Opportunity for Home Team/);
+  assert.match(elements.get('raw-text').innerHTML, /made <span[^>]*>good<\/span> shot/);
+});
+
+test('playback shows the observed raw narrative for a tactical-only cue', () => {
+  const { context: ctx, elements } = loadViewerContextWithStableElements();
+  vm.runInContext(`_match = { playerRegistry: {}, opportunities: [] }; _playbackState.narrativeKey = null;`, ctx);
+  ctx.showPlaybackNarrative({ opportunityIndex: null, tacticalEventIndex: 2, rawText: 'Home Team - Change mentality to ATTACKING' });
+  assert.equal(elements.get('raw-panel').style.display, 'block');
+  assert.match(elements.get('raw-text').innerHTML, /Change mentality to ATTACKING/);
+});
+
 test('a throwing Analysis panel degrades locally and does not blank out Stats/Squad/Pitch', () => {
   const { context: ctx, elements } = loadViewerContextWithStableElements();
   const narrative = [
