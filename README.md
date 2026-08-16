@@ -24,10 +24,14 @@ aligned instead of overwriting the preceding attempt.
   opportunity; goals are unmistakable, clicking a marker jumps to it wherever
   you are in the app.
 - **Statistics** — separate home/away player tables for minutes, saves,
-  interceptions, blocks, tackles, attempted/completed passes, assists, shots, goals, and the first
-  tired/very-tired report, followed by shot/pass type breakdowns, long-ball summary,
+  interceptions, blocks, tackles, attempted/completed passes and completion percentage,
+  assists, shots, shots faced/saved by goalkeepers, shots on target, goals, fouls, cards,
+  injuries, and every tired/very-tired
+  report, followed by shot/pass type breakdowns, long-ball summary,
   delivery to forwards, and an offense-vs-defense scatter. Player totals include only
   named actions observed in the report; anonymous blocks are not guessed.
+  Substitutes are grouped directly beneath the player they replaced, and each player is
+  assigned to one canonical home/away side for the match.
 - **Tactics** — the five main team tactics scraped at kickoff and shown for each dynamic
   tactical phase, plus tiredness, substitutions, position changes, and observed tactic
   orders. A new phase begins only on a material tactical-state change, not on a fixed

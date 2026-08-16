@@ -691,14 +691,34 @@ test('player statistics render separate home and away tables with requested colu
     playerRegistry: {
       'Home Player': { team: 'Home Team', side: 'home', positions: ['CM'] },
       'Away Keeper': { team: 'Away Team', side: 'away', positions: ['GK'] },
+      'Away Defender': { team: 'Away Team', side: 'away', positions: ['CB'] },
     },
-    opportunities: [{ minute: 15, steps: [{
-      stepType: 'SHOT', shooter: { name: 'Home Player', position: 'CM' },
+    opportunities: [{ minute: 15, steps: [
+      { stepType: 'PB_PASS', from: { name: 'Home Passer', position: 'RM' },
+        to: { name: 'Home Player', position: 'CM' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'PB_DUEL', attacker: { name: 'Home Player', position: 'CM' },
+        defender: { name: 'Away Defender', position: 'CB' }, fouler: { name: 'Away Defender', position: 'CB' },
+        yellowCard: { name: 'Away Defender', position: 'CB' }, defendingTeam: 'Away Team',
+        defendingSide: 'away', outcome: 'WON', values: {} },
+      { stepType: 'SHOT', shooter: { name: 'Home Player', position: 'CM' },
       gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
       defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'SAVED',
     }] }],
-    tacticalEvents: [{ type: 'TIREDNESS', minute: 70, sequence: 70, team: 'Home Team', teamSide: 'home',
-      player: { name: 'Home Player', position: 'CM' }, level: 'VERY_TIRED' }],
+    tacticalEvents: [
+      { type: 'TIREDNESS', minute: 35, sequence: 35, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Player', position: 'CM' }, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 43, sequence: 43, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Player', position: 'CM' }, level: 'VERY_TIRED' },
+      { type: 'HALF_TIME', minute: 45, sequence: 45 },
+      { type: 'INJURY', minute: 65, sequence: 65, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Player', position: 'CM' }, severity: 'LIGHT' },
+      { type: 'TIREDNESS', minute: 70, sequence: 70, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Player', position: 'CM' }, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 82, sequence: 82, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Player', position: 'CM' }, level: 'VERY_TIRED' },
+      { type: 'SUBSTITUTION', minute: 85, sequence: 85, team: 'Home Team', teamSide: 'home',
+        playerOut: { name: 'Home Player', position: 'CM' }, playerIn: { name: 'Home Sub', position: 'CM' } },
+    ],
   };
   const html = ctx.renderStats({}, 'Home Team', 'Away Team', match.opportunities, match);
   assert.match(html, /Player Statistics/);
@@ -706,12 +726,23 @@ test('player statistics render separate home and away tables with requested colu
   assert.match(html, /Away Team/);
   assert.match(html, /Minutes played/);
   assert.match(html, /Interceptions/);
-  assert.match(html, /Completed passes/);
+  assert.match(html, /Shots faced/);
+  assert.match(html, /Passes \(completed\)/);
+  assert.match(html, /Pass %/);
+  assert.match(html, /On target/);
+  assert.match(html, /Fouls/);
   assert.match(html, /Very tired \(min\)/);
   assert.match(html, /Away Keeper/);
   assert.match(html, /Home Player <span class="player-position">\[CM\]<\/span>/);
   assert.doesNotMatch(html, /<th>Pos<\/th>/);
-  assert.match(html, /70'/);
+  assert.match(html, /1 \(1\)/);
+  assert.match(html, /100%/);
+  assert.match(html, /35', 70'/);
+  assert.match(html, /43', 82'/);
+  assert.match(html, /🟨 15'/);
+  assert.match(html, /🩹 Light 65'/);
+  assert.match(html, /player-substitute/);
+  assert.match(html, /↳<\/span>Home Sub <span class="player-position">\[CM\]<\/span> <span class="sub-minute">85'/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

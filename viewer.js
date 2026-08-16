@@ -1485,23 +1485,34 @@ function renderGroupedStats(stats) {
 function renderPlayerStatisticsTeam(label, side, players) {
   if (!players.length) return '';
   const count = n => n ? escapeHtml(String(n)) : '<span class="zero">–</span>';
-  const minute = n => n == null ? '<span class="zero">–</span>' : `<span class="minute">${escapeHtml(String(n))}'</span>`;
+  const minutes = values => values?.length
+    ? `<span class="minute">${values.map(n => `${escapeHtml(String(n))}'`).join(', ')}</span>`
+    : '<span class="zero">–</span>';
   const rows = players.map(p => {
     const positions = (p.positions || []).join('/');
+    const flags = [
+      ...(p.yellowCards || []).map(n => `<span class="player-flag card" title="Yellow card at ${escapeHtml(String(n))}'">🟨 ${escapeHtml(String(n))}'</span>`),
+      ...(p.injuries || []).map(injury => {
+        const severity = injury.severity ? `${injury.severity[0]}${injury.severity.slice(1).toLowerCase()} ` : '';
+        return `<span class="player-flag injury" title="${escapeHtml(severity)}injury at ${escapeHtml(String(injury.minute))}'">🩹 ${escapeHtml(severity)}${escapeHtml(String(injury.minute))}'</span>`;
+      }),
+    ].join('');
     return `<tr>
-    <td title="${escapeHtml(p.name)}">${escapeHtml(p.name)}${positions ? ` <span class="player-position">[${escapeHtml(positions)}]</span>` : ''}</td>
+    <td class="${p.replacedPlayer ? 'player-substitute' : ''}" title="${escapeHtml(p.name)}${p.replacedPlayer ? ` replaced ${escapeHtml(p.replacedPlayer)} at ${escapeHtml(String(p.substitutedInMinute))}'` : ''}">${p.replacedPlayer ? '<span class="sub-arrow">↳</span>' : ''}${escapeHtml(p.name)}${positions ? ` <span class="player-position">[${escapeHtml(positions)}]</span>` : ''}${p.substitutedInMinute != null ? ` <span class="sub-minute">${escapeHtml(String(p.substitutedInMinute))}'</span>` : ''}${flags ? ` <span class="player-flags">${flags}</span>` : ''}</td>
     <td>${escapeHtml(String(p.minutesPlayed))}</td>
-    <td>${count(p.saves)}</td><td>${count(p.interceptions)}</td><td>${count(p.blocks)}</td>
-    <td>${count(p.tackles)}</td><td>${count(p.passes)}</td><td>${count(p.completedPasses)}</td><td>${count(p.assists)}</td>
-    <td>${count(p.shots)}</td><td>${count(p.goals)}</td>
-    <td>${minute(p.tiredMinute)}</td><td>${minute(p.veryTiredMinute)}</td>
+    <td>${count(p.shotsFaced)}</td><td>${count(p.saves)}</td><td>${count(p.interceptions)}</td><td>${count(p.blocks)}</td>
+    <td>${count(p.tackles)}</td><td>${escapeHtml(String(p.passes))} (${escapeHtml(String(p.completedPasses))})</td>
+    <td>${p.passCompletionPct == null ? '<span class="zero">–</span>' : `${escapeHtml(String(p.passCompletionPct))}%`}</td>
+    <td>${count(p.assists)}</td><td>${count(p.shots)}</td><td>${count(p.shotsOnTarget)}</td><td>${count(p.goals)}</td><td>${count(p.fouls)}</td>
+    <td>${minutes(p.tiredMinutes)}</td><td>${minutes(p.veryTiredMinutes)}</td>
   </tr>`;
   }).join('');
   return `<div class="player-stats-team ${side}"><span>${escapeHtml(label)}</span><span>${players.length} players observed</span></div>
     <div class="player-stats-scroll"><table class="player-stats-table">
       <thead><tr><th>Player</th><th title="Minutes played">Min</th>
-        <th>Saves</th><th title="Interceptions">Interceptions</th><th>Blocks</th><th>Tackles</th>
-        <th title="Passes attempted">Passes</th><th title="Completed passes">Completed</th><th>Assists</th><th>Shots</th><th>Goals</th>
+        <th title="All parsed shots naming this goalkeeper">Shots faced</th><th>Saves</th><th title="Interceptions">Interceptions</th><th>Blocks</th><th>Tackles</th>
+        <th title="Passes attempted, with completed passes in parentheses">Passes (completed)</th><th title="Completed passes divided by attempted passes">Pass %</th>
+        <th>Assists</th><th>Shots</th><th title="Shots resulting in a goal, save, or goalkeeper fumble">On target</th><th>Goals</th><th>Fouls</th>
         <th title="First minute reported tired">Tired (min)</th>
         <th title="First minute reported very tired">Very tired (min)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;

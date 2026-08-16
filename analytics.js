@@ -519,9 +519,42 @@ function playerDuelAnalysis(match) {
 function playerStatistics(match) {
   const byKey = {};
   const keyOf = (name, side) => `${side || 'unknown'}\u0000${name}`;
+  const sideFromTeam = team => {
+    if (!team) return null;
+    if (team === match?.meta?.homeTeam) return 'home';
+    if (team === match?.meta?.awayTeam) return 'away';
+    return null;
+  };
+  // Player identity is match-global: the same player cannot change teams during one
+  // match. Establish one canonical side before aggregating actions so a conflicting
+  // phase-level stamp cannot create both a home and away row. Explicit team-attributed
+  // tactical events (subs/tiredness/position changes) outrank the registry, whose side
+  // comes from the first observed action involving that player.
+  const canonical = {};
+  const setCanonical = (player, team, side, priority) => {
+    if (!player?.name) return;
+    const resolvedSide = sideFromTeam(team || player.team) || side || player.side || null;
+    if (!resolvedSide) return;
+    if (!canonical[player.name] || priority > canonical[player.name].priority)
+      canonical[player.name] = { side: resolvedSide, team: team || player.team || null, priority };
+  };
+  for (const [name, info] of Object.entries(match?.playerRegistry || {}))
+    setCanonical({ name }, info.team, info.side, 20);
+  for (const ev of (match?.tacticalEvents || [])) {
+    if (!ev.teamSide && !sideFromTeam(ev.team)) continue;
+    if (ev.type === 'SUBSTITUTION') {
+      setCanonical(ev.playerOut, ev.team, ev.teamSide, 100);
+      setCanonical(ev.playerIn, ev.team, ev.teamSide, 100);
+    } else if (ev.player) {
+      setCanonical(ev.player, ev.team, ev.teamSide, 100);
+    }
+  }
   const ensure = (player, team = null, side = null) => {
     if (!player?.name) return null;
-    const resolvedSide = side || player.side || null;
+    const identity = canonical[player.name];
+    const resolvedSide = identity?.side || sideFromTeam(team || player.team) || side || player.side || null;
+    const resolvedTeam = identity?.team || team || player.team ||
+      (resolvedSide === 'home' ? match?.meta?.homeTeam : resolvedSide === 'away' ? match?.meta?.awayTeam : null);
     const key = keyOf(player.name, resolvedSide);
     const unresolvedKey = keyOf(player.name, null);
     if (resolvedSide && !byKey[key] && byKey[unresolvedKey]) {
@@ -530,13 +563,17 @@ function playerStatistics(match) {
       delete byKey[unresolvedKey];
     }
     if (!byKey[key]) byKey[key] = {
-      name: player.name, team: team || player.team || null, side: resolvedSide,
-      positions: [], minutesPlayed: 0, saves: 0, interceptions: 0, blocks: 0,
-      tackles: 0, passes: 0, completedPasses: 0, assists: 0, shots: 0, goals: 0,
-      tiredMinute: null, veryTiredMinute: null,
+      name: player.name, team: resolvedTeam, side: resolvedSide,
+      positions: [], minutesPlayed: 0, shotsFaced: 0, saves: 0,
+      interceptions: 0, blocks: 0,
+      tackles: 0, passes: 0, completedPasses: 0, passCompletionPct: null,
+      assists: 0, shots: 0, shotsOnTarget: 0, goals: 0, fouls: 0,
+      tiredMinutes: [], veryTiredMinutes: [], yellowCards: [], injuries: [],
+      substitutedInMinute: null, substitutedOutMinute: null,
+      replacedPlayer: null, replacedByPlayer: null,
     };
     const rec = byKey[key];
-    if (!rec.team && (team || player.team)) rec.team = team || player.team;
+    if (!rec.team && resolvedTeam) rec.team = resolvedTeam;
     if (player.position && !rec.positions.includes(player.position)) rec.positions.push(player.position);
     return rec;
   };
@@ -595,10 +632,23 @@ function playerStatistics(match) {
           if (interceptor) interceptor.interceptions++;
         }
       }
+      if (step.fouler) {
+        const fouler = ensure(step.fouler, step.fouler.team || step.defendingTeam,
+          step.fouler.side || step.defendingSide);
+        if (fouler) fouler.fouls++;
+      }
+      if (step.yellowCard) {
+        const booked = ensure(step.yellowCard, step.yellowCard.team || step.defendingTeam,
+          step.yellowCard.side || step.defendingSide);
+        if (booked && !booked.yellowCards.includes(opp.minute)) booked.yellowCards.push(opp.minute);
+      }
       if (SHOT_STEP_TYPES.includes(step.stepType)) {
         const shooter = ensure(step.shooter, step.attackingTeam, step.attackingSide);
         if (shooter) {
           shooter.shots++;
+          // These outcomes all require the ball to reach the goalkeeper/goal. POST,
+          // MISSED, SHOT_BLOCKED, and the more ambiguous generic CORNER do not.
+          if (['GOAL','SAVED','FUMBLED'].includes(step.outcome)) shooter.shotsOnTarget++;
           if (step.outcome === 'GOAL') {
             shooter.goals++;
             if (pendingAssist?.targetName === step.shooter?.name) {
@@ -608,7 +658,10 @@ function playerStatistics(match) {
           }
         }
         const goalkeeper = ensure(step.gk, step.defendingTeam, step.defendingSide);
-        if (goalkeeper && step.outcome === 'SAVED') goalkeeper.saves++;
+        if (goalkeeper) {
+          goalkeeper.shotsFaced++;
+          if (step.outcome === 'SAVED') goalkeeper.saves++;
+        }
       }
     }
   }
@@ -617,13 +670,25 @@ function playerStatistics(match) {
     .sort((a, b) => (a.sequence ?? a.minute ?? 0) - (b.sequence ?? b.minute ?? 0));
   for (const ev of events) {
     if (ev.type === 'SUBSTITUTION') {
-      ensure(ev.playerOut, ev.team, ev.teamSide);
-      ensure(ev.playerIn, ev.team, ev.teamSide);
+      const outgoing = ensure(ev.playerOut, ev.team, ev.teamSide);
+      const incoming = ensure(ev.playerIn, ev.team, ev.teamSide);
+      if (outgoing) {
+        outgoing.substitutedOutMinute = ev.minute;
+        outgoing.replacedByPlayer = incoming?.name || null;
+      }
+      if (incoming) {
+        incoming.substitutedInMinute = ev.minute;
+        incoming.replacedPlayer = outgoing?.name || null;
+      }
     } else if (ev.player) {
       const rec = ensure(ev.player, ev.team, ev.teamSide);
       if (rec && ev.type === 'TIREDNESS') {
-        if (ev.level === 'TIRED' && rec.tiredMinute == null) rec.tiredMinute = ev.minute;
-        if (ev.level === 'VERY_TIRED' && rec.veryTiredMinute == null) rec.veryTiredMinute = ev.minute;
+        const minutes = ev.level === 'VERY_TIRED' ? rec.veryTiredMinutes : rec.tiredMinutes;
+        if (!minutes.includes(ev.minute)) minutes.push(ev.minute);
+      }
+      if (rec && ev.type === 'INJURY') {
+        if (!rec.injuries.some(injury => injury.minute === ev.minute && injury.severity === ev.severity))
+          rec.injuries.push({ minute: ev.minute, severity: ev.severity || null });
       }
     }
   }
@@ -650,6 +715,8 @@ function playerStatistics(match) {
   }
   for (const [key, start] of Object.entries(onSince))
     if (start != null) byKey[key].minutesPlayed += Math.max(0, matchMinutes - start);
+  for (const rec of Object.values(byKey))
+    rec.passCompletionPct = rec.passes ? Math.round(rec.completedPasses * 100 / rec.passes) : null;
 
   const positionOrder = ['GK','LB','LWB','CB','RB','RWB','DM','LM','CM','RM','LW','OM','RW','FW'];
   const sortPlayers = (a, b) => {
@@ -657,11 +724,28 @@ function playerStatistics(match) {
     const bi = positionOrder.indexOf(b.positions[0]);
     return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.name.localeCompare(b.name);
   };
-  const players = Object.values(byKey).sort(sortPlayers);
+  const players = Object.values(byKey);
+  const orderSide = side => {
+    const sidePlayers = players.filter(p => p.side === side);
+    const ordered = [];
+    const included = new Set();
+    const appendWithReplacements = player => {
+      if (!player || included.has(player)) return;
+      included.add(player);
+      ordered.push(player);
+      sidePlayers
+        .filter(candidate => candidate.replacedPlayer === player.name)
+        .sort((a, b) => (a.substitutedInMinute ?? 999) - (b.substitutedInMinute ?? 999))
+        .forEach(appendWithReplacements);
+    };
+    sidePlayers.filter(p => !p.replacedPlayer).sort(sortPlayers).forEach(appendWithReplacements);
+    sidePlayers.filter(p => !included.has(p)).sort(sortPlayers).forEach(appendWithReplacements);
+    return ordered;
+  };
   return {
-    home: players.filter(p => p.side === 'home'),
-    away: players.filter(p => p.side === 'away'),
-    unresolved: players.filter(p => p.side !== 'home' && p.side !== 'away'),
+    home: orderSide('home'),
+    away: orderSide('away'),
+    unresolved: players.filter(p => p.side !== 'home' && p.side !== 'away').sort(sortPlayers),
     matchMinutes,
     note: 'Observed named actions only. Anonymous blocks are not assigned to a player; players never named in the report cannot be reconstructed from the current scrape.',
   };
