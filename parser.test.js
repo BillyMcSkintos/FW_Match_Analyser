@@ -1989,6 +1989,72 @@ test('an arbitrary three-shot live-ball rebound chain creates three aligned shot
   assert.equal(match.validation.confidence, 'exact');
 });
 
+test('a woodwork rebound opens a new stream phase when the next shot has no intervening event', () => {
+  const narrative = [
+    'Minute 52',
+    'Opportunity for Lyse Fotbollsklubb.',
+    'Midfield',
+    'Helmer Walgren [CM] attempted low good pass to Sava Rilaković [LW]',
+    'Joel Engström [CM] got decent assistance, and was in decent position.',
+    'Sava Rilaković [LW] made good reception and took control of the ball.',
+    'Penalty Box',
+    'Sava Rilaković [LW] attempted high excellent pass to Joel Guedes [FW]',
+    'Thomas Rönnlund [CB] got good assistance, and was in decent position.',
+    'Joel Guedes [FW] made excellent reception and took control of the ball.',
+    'Goal Attempt',
+    'Joel Guedes [FW] made good shot.',
+    'Tomas Källström [GK] was in decent spot, and made good effort to prevent goal.',
+    'Tomas Källström [GK] bounced the ball back.',
+    'Tomas Källström [GK] directed ball to corner.',
+    'Corner',
+    'Hendrikus Henkes [CM] made high excellent pass to Hernán Cuadrado [FW]',
+    'Thomas Rönnlund [CB] got decent assistance, and was in decent position.',
+    'Goal Attempt',
+    'Hernán Cuadrado [FW] made decent shot.',
+    'Tomas Källström [GK] was in decent spot, and made decent effort to prevent goal.',
+    'The ball bounced off the post!',
+    'The ball is now free!',
+    'Sigfrid Andreasson [FW] was close and took control of the ball.',
+    'Goal Attempt',
+    'Sigfrid Andreasson [FW] made good shot.',
+    'Tomas Källström [GK] was in perfect spot, and made excellent effort to prevent goal.',
+    'Tomas Källström [GK] managed to get hold of the ball.',
+    '[0-5]',
+  ].join('\n');
+  const telemetry = [
+    "52' - A - O_MID_START",
+    "52' - A - V_PASS - (55)",
+    "52' - H - V_ASSISTANCE - (45)",
+    "52' - A - V_RECEPTION - (55)",
+    "52' - A - V_PASS - (65)",
+    "52' - H - V_ASSISTANCE - (55)",
+    "52' - A - V_RECEPTION - (65)",
+    "52' - A - V_SHOT - (55)",
+    "52' - H - V_REFLEX - (55)",
+    "52' - H - E_FUMBLE",
+    "52' - A - V_PASS - (65)",
+    "52' - H - V_ASSISTANCE - (45)",
+    "52' - A - V_SHOT - (45)",
+    "52' - H - V_REFLEX - (55)",
+    "52' - A - V_SHOT - (65)",
+    "52' - H - V_REFLEX - (75)",
+    "52' - H - E_CORNER",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative, {
+    homeTeam: 'BK Slarvhult',
+    awayTeam: 'Lyse Fotbollsklubb',
+  });
+  assert.equal(match.validation.phaseMismatches.length, 0);
+  assert.equal(match.validation.confidence, 'exact');
+  const shots = match.opportunities[0].steps.filter(s => s.stepType === 'SHOT');
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.values.shot.value, s.outcome]), [
+    ['Joel Guedes', 55, 'CORNER'],
+    ['Hernán Cuadrado', 45, 'POST'],
+    ['Sigfrid Andreasson', 65, 'SAVED'],
+  ]);
+});
+
 test('goalkeeper pressure wording is neutral metadata on a normal saved shot', () => {
   const narrative = [
     'Minute 30', 'Opportunity for Home Team.', 'Penalty Box',

@@ -115,7 +115,13 @@ function buildStreamPhases(tokens) {
         phase.values.assistance = tok.value; break;
       case 'V_RECEPTION':  phase.values.reception = tok.value; break;
       case 'V_TACKLING':   phase.values.tackle     = tok.value; break;
-      case 'V_SHOT':       phase.values.shot        = tok.value; break;
+      // A second shot can follow a woodwork rebound without any E_* terminal token
+      // between the two attempts. Treat the repeated V_SHOT as the only reliable phase
+      // boundary in that sequence; otherwise it overwrites the first shot and leaves the
+      // narrative with one extra live-ball SHOT phase.
+      case 'V_SHOT':
+        if ('shot' in phase.values) flush();
+        phase.values.shot = tok.value; break;
       case 'V_REFLEX':     phase.values.gkSave      = tok.value; break;
       case 'E_CORNER': case 'E_FREE_KICK': case 'E_GOAL':
       case 'E_BLOCK': case 'E_INTERCEPTION': case 'E_FUMBLE': case 'E_OFFSIDE':
