@@ -781,10 +781,76 @@ test('GK gains control and the save itself launches a counter-attack', () => {
   const opp = match.opportunities[0];
   assert.equal(opp.teamSide, 'away');
   assert.equal(opp.isCounterAttack, true);
+  const shot = opp.steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shot.shotAngle, 'good');
   // Possession correctly flips to the GK's own team for the counter phase.
   const caStep = opp.steps.find(s => s.isCA && s.stepType === 'START_PASS');
   assert.equal(caStep.from.name, 'Player G');
   assert.equal(caStep.from.side, 'home');
+});
+
+test('a poor shot angle is recognized and preserved', () => {
+  const narrative = [
+    'Minute 73',
+    'Opportunity for Home Team.',
+    'Penalty Box',
+    'Player A [RM] attempted high awesome accurate pass to Naor Tsur [FW]',
+    'Player B [CB] got superb assistance, and was in decent position.',
+    'Naor Tsur [FW] made awesome reception and took control of the ball.',
+    'Goal Attempt',
+    'Naor Tsur [FW] has a poor angle.',
+    'Naor Tsur [FW] made excellent shot.',
+    'Iza Bolier [GK] was fooled , and made superb effort to prevent goal.',
+    'GOAL!',
+    '[4-1]',
+  ].join('\n');
+  const telemetry = [
+    "73' - H - O_PB_START",
+    "73' - H - V_PASS - (85)",
+    "73' - A - V_ASSISTANCE - (75)",
+    "73' - H - V_RECEPTION - (85)",
+    "73' - H - V_SHOT - (65)",
+    "73' - A - V_REFLEX - (75)",
+    "73' - H - E_GOAL",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative, {
+    homeTeam: 'Home Team',
+    awayTeam: 'Away Team',
+  });
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  const shot = match.opportunities[0].steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shot.shotAngle, 'poor');
+  assert.equal(shot.outcome, 'GOAL');
+});
+
+test('a passer pressured into a rushed play is recognized and preserved on the pass', () => {
+  const narrative = [
+    'Minute 88',
+    'Opportunity for Home Team.',
+    'Penalty Box',
+    'John Lomholt [LW] was pressured to make a rushed play.',
+    'John Lomholt [LW] attempted low excellent pass to Jakov Ponjarac [FW]',
+    'The pass was blocked by the opponent player!',
+    'The ball is now free!',
+    'Player C [CB] was close and took control of the ball.',
+  ].join('\n');
+  const telemetry = [
+    "88' - H - O_PB_START",
+    "88' - H - V_PASS - (65)",
+  ].join('\n');
+
+  const match = parseMatch(telemetry, narrative, {
+    homeTeam: 'Home Team',
+    awayTeam: 'Away Team',
+  });
+  assert.equal(match.validation.unknownNarrativeLines.length, 0);
+  const pass = match.opportunities[0].steps.find(s => s.stepType === 'PB_PASS');
+  assert.equal(pass.from.name, 'John Lomholt');
+  assert.equal(pass.passerUnderPressure.name, 'John Lomholt');
+  assert.deepEqual(Array.from(pass.passContextLines), [
+    'John Lomholt [LW] was pressured to make a rushed play.',
+  ]);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
