@@ -22,6 +22,13 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   substitutes are grouped directly beneath the player they replaced.
 
 ### Fixed
+- Split consecutive telemetry shots into distinct live-ball rebound phases even when
+  woodwork produces no intervening terminal event, preventing phase-count degradation
+  and shot-value overwrites.
+- Recognized FinalWhistle's pressured/rushed-play wording, preserving it as passer
+  context and labeling the corresponding opportunity step as rushed.
+- Recognized and preserved FinalWhistle's weak, poor, and good shot-angle wording;
+  opportunity details now show the actual angle instead of labeling every angle as weak.
 - Player statistics resolve one canonical home/away side per player, preferring explicit
   team-attributed match events over weaker action-level stamps, so one player cannot be
   duplicated under both teams.

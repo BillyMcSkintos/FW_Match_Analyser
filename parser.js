@@ -115,7 +115,13 @@ function buildStreamPhases(tokens) {
         phase.values.assistance = tok.value; break;
       case 'V_RECEPTION':  phase.values.reception = tok.value; break;
       case 'V_TACKLING':   phase.values.tackle     = tok.value; break;
-      case 'V_SHOT':       phase.values.shot        = tok.value; break;
+      // A second shot can follow a woodwork rebound without any E_* terminal token
+      // between the two attempts. Treat the repeated V_SHOT as the only reliable phase
+      // boundary in that sequence; otherwise it overwrites the first shot and leaves the
+      // narrative with one extra live-ball SHOT phase.
+      case 'V_SHOT':
+        if ('shot' in phase.values) flush();
+        phase.values.shot = tok.value; break;
       case 'V_REFLEX':     phase.values.gkSave      = tok.value; break;
       case 'E_CORNER': case 'E_FREE_KICK': case 'E_GOAL':
       case 'E_BLOCK': case 'E_INTERCEPTION': case 'E_FUMBLE': case 'E_OFFSIDE':
@@ -270,6 +276,7 @@ function parseNarrative(narrativeText) {
       passType: 'normal', passHeight: null, outcome: null, fouler: null, shotTaker: null,
       blockRecovery: null, blockRecoveryRole: null, looseBallResolution: null, yellowCard: null,
       shotType: null, shotAngle: null, missType: null, gkContextLines: [],
+      passerUnderPressure: null, passContextLines: [],
       oneOnOne: false, isLongShot: false, isCA: inCA };
   };
 
@@ -506,15 +513,21 @@ function parseNarrative(narrativeText) {
     // 1v1
     if (/one on one with the keeper/.test(line)) { currentPhase.oneOnOne = true; continue; }
 
-    // Weak angle
-    if (/has a weak angle/.test(line)) { currentPhase.shotAngle = 'weak'; continue; }
-    // Good angle — the direct positive counterpart of the above. Not stored as a value:
-    // viewer.js's step-detail rendering unconditionally shows "weak angle" text whenever
-    // shotAngle is truthy, so setting 'good' here without also fixing that rendering would
-    // silently mislabel a good-angle shot as weak. Properly supporting the distinction is
-    // tactical-state expansion, out of scope for this pass — recognized explicitly here so
-    // it isn't flagged as unknown wording either way.
-    if (/has a good angle/.test(line)) continue;
+    // Shot angle. FinalWhistle has been observed using weak, poor, and good here. Preserve
+    // the exact adjective so the viewer can display it faithfully instead of treating every
+    // truthy angle as "weak" (which previously forced good to be recognized-but-discarded).
+    if ((m = line.match(/has a (weak|poor|good) angle\.$/))) {
+      currentPhase.shotAngle = m[1];
+      continue;
+    }
+
+    // Observed passer context. This line precedes the resulting pass and describes why
+    // the play was rushed; it is not a separate phase or a numeric execution modifier.
+    if ((m = line.match(/^(.+?) \[([A-Z]+)\] was pressured to make a rushed play\.$/))) {
+      currentPhase.passerUnderPressure = player(m[1], m[2]);
+      currentPhase.passContextLines.push(line);
+      continue;
+    }
 
     // Shot line — also captures GK name for FK shots. Always records who actually took
     // the shot (shotTaker), separately from passer: for a normal PB/SP/FK-delivery
@@ -653,6 +666,8 @@ function passDuelShotSteps(mk, phase, sv, isPenalty, passStepType, duelStepType)
     passType:   phase.passType,
     passHeight: phase.passHeight,
     passRequest: phase.passRequest || null,
+    passerUnderPressure: phase.passerUnderPressure || null,
+    passContextLines: phase.passContextLines || [],
     values:     { pass: qv(sv.pass ?? null) },
     outcome:    null,
   }));
@@ -719,6 +734,8 @@ function phaseToSteps(phase, streamValues, streamEvents) {
         passType:    phase.passType,
         passHeight:  phase.passHeight,
         passRequest: phase.passRequest || null,
+        passerUnderPressure: phase.passerUnderPressure || null,
+        passContextLines: phase.passContextLines || [],
         values:      { pass: qv(sv.pass ?? null) },
         outcome:     null,
       }));
@@ -853,7 +870,7 @@ function assignSides(phases, attackTeam, attackSide, defendTeam, defendSide) {
     const ds = p.isCA ? attackSide : defendSide;
     const stamp = (pl, team, side) => pl && (pl.team = team, pl.side = side);
     stamp(p.passer,  at, as); stamp(p.target,  at, as); stamp(p.shotTaker, at, as);
-    stamp(p.passRequest?.player, at, as);
+    stamp(p.passRequest?.player, at, as); stamp(p.passerUnderPressure, at, as);
     stamp(p.defender, dt, ds);
     stamp(p.blockRecovery,
       p.blockRecoveryRole === 'attacker' ? at : dt,

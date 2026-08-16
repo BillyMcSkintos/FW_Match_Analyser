@@ -1006,3 +1006,37 @@ test('createExportJpeg and saveJpg exist as functions — actual canvas/Image ra
   assert.equal(typeof ctx.createExportJpeg, 'function');
   assert.equal(typeof ctx.saveJpg, 'function');
 });
+
+test('shot detail preserves weak, poor, and good angle labels', () => {
+  const ctx = loadViewerContext();
+  const renderAngle = shotAngle => ctx.renderStepDetail({
+    minute: 73,
+    steps: [{
+      stepType: 'SHOT',
+      shooter: { name: 'Player A', position: 'FW' },
+      gk: { name: 'Player B', position: 'GK' },
+      shotAngle,
+      values: {},
+    }],
+  });
+
+  assert.match(renderAngle('weak'), />weak angle</);
+  assert.match(renderAngle('poor'), />poor angle</);
+  assert.match(renderAngle('good'), />good angle</);
+  assert.doesNotMatch(renderAngle('poor'), />weak angle</);
+});
+
+test('a pass made under pressure is labeled rushed in step detail', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderStepDetail({
+    minute: 88,
+    steps: [{
+      stepType: 'PB_PASS',
+      from: { name: 'John Lomholt', position: 'LW' },
+      to: { name: 'Jakov Ponjarac', position: 'FW' },
+      passerUnderPressure: { name: 'John Lomholt', position: 'LW' },
+      values: { pass: { value: 65 } },
+    }],
+  });
+  assert.match(html, />rushed</);
+});

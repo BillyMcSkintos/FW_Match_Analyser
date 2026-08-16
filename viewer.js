@@ -895,6 +895,7 @@ function renderStepDetail(opp) {
           lv('Pass', v.pass),
           s.passHeight==='high' ? '<span class="flag-hi">high</span>' : null,
           (s.passType && s.passType!=='normal') ? `<span class="flag-pt">${s.passType}</span>` : null,
+          s.passerUnderPressure ? '<span class="flag-warn">rushed</span>' : null,
         ].filter(Boolean).join(' ');
         break;
       case 'MID_DUEL': case 'PB_DUEL': case 'SP_DUEL': case 'FK_DUEL':
@@ -921,7 +922,7 @@ function renderStepDetail(opp) {
           // These describe the shot itself (type/angle/situation), so they come before
           // Sh/Sa — trailing after Sa read as if they described the save instead.
           (s.shotType && s.shotType !== 'goal') ? `<span class="flag-pt">${s.shotType}</span>` : null,
-          s.shotAngle  ? '<span class="flag-warn">weak angle</span>' : null,
+          s.shotAngle  ? `<span class="${s.shotAngle === 'good' ? 'flag-pt' : 'flag-warn'}">${escapeHtml(s.shotAngle)} angle</span>` : null,
           s.oneOnOne   ? '<span class="flag-warn">1v1</span>'        : null,
           s.isLongShot ? '<span class="flag-pt">long</span>'         : null,
           lv('Sh', v.shot),
