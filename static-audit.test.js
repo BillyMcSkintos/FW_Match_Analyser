@@ -57,10 +57,13 @@ test('viewer.html only loads local scripts, and never inline event handlers', ()
 
 test('playback UI is local, accessible and reduced-motion aware', () => {
   const html = read('viewer.html');
-  for (const required of ['data-tab="playback"', 'id="panel-playback"', 'id="pb-play"',
+  for (const required of ['id="panel-opps"', 'id="playback-controls-panel"', 'id="pb-play"',
     'id="pb-seek"', 'aria-live="polite"', 'prefers-reduced-motion']) {
     assert.match(html, new RegExp(required), `missing playback UI contract: ${required}`);
   }
+  assert.doesNotMatch(html, /data-tab="playback"|id="panel-playback"/,
+    'playback belongs inside Opportunities, not in a separate tab/panel');
+  assert.ok(html.indexOf('id="playback-controls-panel"') > html.indexOf('id="panel-opps"'));
 });
 
 test('no network-exfiltration, dynamic-eval, or unexpected persistent-storage sink exists anywhere in the runtime bundle', () => {

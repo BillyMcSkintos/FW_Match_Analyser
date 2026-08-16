@@ -179,12 +179,12 @@ select:disabled{opacity:.4}
 .no-data{display:flex;align-items:center;justify-content:center;flex:1;color:#8a9ab0;font-size:14px}
 
 /* ── Playback ── */
-.playback-shell{display:flex;flex-direction:column;gap:10px;padding:12px;overflow-y:auto}
+.playback-shell{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid #1a2540;background:#070d1b;flex-shrink:0}
 .playback-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .playback-controls label{display:flex;align-items:center;gap:4px;font-size:11px;color:#8a9ab0;text-transform:uppercase;letter-spacing:.5px}
 .playback-seek{width:100%;accent-color:#6fb3d9}
 .playback-progress{font:11px monospace;color:#5a6f8c;text-align:right}
-.playback-card{border:1px solid #1a2540;border-left:3px solid #6fb3d9;border-radius:5px;background:#060d18;padding:12px;min-height:112px}
+.playback-card{border:1px solid #1a2540;border-left:3px solid #6fb3d9;border-radius:5px;background:#060d18;padding:7px 9px;min-height:68px}
 .playback-card.away{border-left-color:#e0925c}
 .playback-kicker{font-size:10px;color:#6fb3d9;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px}
 .playback-card.away .playback-kicker{color:#e0925c}
@@ -200,6 +200,9 @@ select:disabled{opacity:.4}
 .pb-svg-pulse{fill:none;stroke:#e8c468;stroke-width:3;transform-box:fill-box;transform-origin:center;animation:pb-pulse 1s ease-out infinite}
 .pb-step-route{animation:pb-route-in .18s ease-out}
 .pb-step-arrow{stroke-dasharray:1;stroke-dashoffset:1;animation:pb-draw-arrow .7s ease-out forwards}
+.opp-row.playback-current,.tac-row.playback-current,.tac-half.playback-current{background:#13213a;box-shadow:inset 3px 0 #e8c468}
+.step-tr.playback-current{background:#172541;outline:1px solid #e8c46855}
+.step-tr.playback-future{display:none}
 @keyframes pb-vignette-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes pb-pulse{0%{opacity:.9;transform:scale(.55)}100%{opacity:0;transform:scale(1.8)}}
 @keyframes pb-draw-arrow{to{stroke-dashoffset:0}}
@@ -229,7 +232,6 @@ select:disabled{opacity:.4}
     <div id="errors"></div>
     <div class="tabs" id="tabs" style="display:none">
       <div class="tab active" data-tab="opps">Opportunities</div>
-      <div class="tab" data-tab="playback">Playback</div>
       <div class="tab" data-tab="stats">Statistics</div>
       <div class="tab" data-tab="squad">Tactics</div>
       <div class="tab" data-tab="analysis">Analysis</div>
@@ -240,6 +242,19 @@ select:disabled{opacity:.4}
     <div class="timeline-wrap" id="timeline-wrap" style="display:none"></div>
 
     <div id="panel-opps" class="panel active">
+      <div class="playback-shell" id="playback-controls-panel">
+        <div class="playback-controls" aria-label="Playback controls">
+          <button id="pb-restart" title="Restart playback">↺</button>
+          <button id="pb-prev" title="Previous moment">◀</button>
+          <button id="pb-play" class="primary" aria-label="Play match">Play</button>
+          <button id="pb-next" title="Next moment">▶</button>
+          <label>Speed <select id="pb-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+          <label>Scope <select id="pb-scope"><option value="match">Match</option><option value="selected">Selected opportunity</option></select></label>
+        </div>
+        <input id="pb-seek" class="playback-seek" type="range" min="0" max="0" value="0" aria-label="Playback position">
+        <div id="pb-progress" class="playback-progress">0 / 0</div>
+        <div id="playback-card" class="playback-card" aria-live="polite"><div class="no-data">Scrape a match to begin.</div></div>
+      </div>
       <div class="opp-list-wrap">
         <div class="opp-list" id="opp-list"><div class="no-data">Scrape a match to begin</div></div>
       </div>
@@ -252,22 +267,6 @@ select:disabled{opacity:.4}
         <div class="leg-item"><div class="leg-dot" style="background:#d4a850"></div>intercept</div>
         <div class="leg-item">┄ dashed = CA / restart</div>
         <div class="leg-item">PK = penalty spot</div>
-      </div>
-    </div>
-    <div id="panel-playback" class="panel">
-      <div class="playback-shell">
-        <div class="playback-controls" aria-label="Playback controls">
-          <button id="pb-restart" title="Restart playback">↺</button>
-          <button id="pb-prev" title="Previous moment">◀</button>
-          <button id="pb-play" class="primary" aria-label="Play match">Play</button>
-          <button id="pb-next" title="Next moment">▶</button>
-          <label>Speed <select id="pb-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
-          <label>Scope <select id="pb-scope"><option value="match">Match</option><option value="selected">Selected opportunity</option></select></label>
-        </div>
-        <input id="pb-seek" class="playback-seek" type="range" min="0" max="0" value="0" aria-label="Playback position">
-        <div id="pb-progress" class="playback-progress">0 / 0</div>
-        <div id="playback-card" class="playback-card" aria-live="polite"><div class="no-data">Scrape a match to begin.</div></div>
-        <div class="playback-help">Playback follows the parsed narrative in order; the source narrative remains visible beside the pitch. Player positions and movement paths are schematic because FinalWhistle reports roles and actions, not exact pitch coordinates.</div>
       </div>
     </div>
     <div id="panel-stats" class="panel"><div class="no-data">No statistics.</div></div>

@@ -101,6 +101,25 @@ test('playback draws each directional action as its own arrow', () => {
   assert.notEqual(pass, shot);
 });
 
+test('Opportunities markup exposes chronological events and step anchors to playback', () => {
+  const ctx = loadViewerContext();
+  const eventHtml = ctx.renderOppList({ opportunities: [], tacticalEvents: [
+    { type: 'TIREDNESS', minute: 34, player: { name: 'Player One', position: 'CM' }, level: 'TIRED', teamSide: 'home' },
+    { type: 'INJURY', minute: 35, player: { name: 'Player Two', position: 'CB' }, severity: 'LIGHT', teamSide: 'away' },
+  ] });
+  assert.match(eventHtml, /data-event-idx="0"/);
+  assert.match(eventHtml, /data-event-idx="1"/);
+  assert.match(eventHtml, />One <span/);
+  assert.match(eventHtml, />Two <span/);
+
+  const stepsHtml = ctx.renderStepDetail({ minute: 1, steps: [
+    { stepType: 'START_PASS', from: { name: 'A', position: 'RB' }, to: { name: 'B', position: 'CM' }, values: {}, outcome: null },
+    { stepType: 'SHOT', shooter: { name: 'B', position: 'FW' }, gk: { name: 'C', position: 'GK' }, values: {}, outcome: 'SAVED' },
+  ] });
+  assert.match(stepsHtml, /data-step-index="0"/);
+  assert.match(stepsHtml, /data-step-index="1"/);
+});
+
 test('diagnostic report includes the match URL and exact unknown lines with nearby context', () => {
   const ctx = loadViewerContext();
   const scrape = {

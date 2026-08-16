@@ -20,7 +20,8 @@ aligned instead of overwriting the preceding attempt.
   counter-attacks keep an earlier blocked pass as subdued context while emphasizing the
   route that continued, and the selected opportunity's complete narrative scrolls beside
   the pitch.
-- **Playback** — play, pause, seek, step, restart, and change speed through the parsed
+- **Opportunity playback** — controls embedded directly in Opportunities let you play,
+  pause, seek, step, restart, and change speed through the parsed
   match narrative. The pitch progressively reveals passes, duels, recoveries, rebound
   shots, cards, breaks, and tactical events; playback can cover the whole match or one
   selected opportunity. Role-based movement is clearly labeled **schematic** because
@@ -148,8 +149,9 @@ confirmed when the first AMO submission is made.
 ## Usage
 
 Click **Scrape** while a match report is open to pull in that match. **Load**
-reopens the last scrape from storage; **Clear** wipes it. Open **Playback** to watch the
-parsed match in sequence or switch its scope to the selected opportunity. Hover an opportunity
+reopens the last scrape from storage; **Clear** wipes it. Use the playback controls at
+the top of **Opportunities** to reveal the match in sequence or switch the scope to one
+selected opportunity. Hover an opportunity
 row to preview it on the pitch, click to pin that view, click a timeline
 marker to jump straight to any moment in the match. Pick a scope from the
 export dropdown (**Full view** / **Pinned possession** / **Overview**) and

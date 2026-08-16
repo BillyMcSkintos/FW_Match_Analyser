@@ -12,8 +12,8 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 ## [Unreleased]
 
 ### Added
-- A **Playback** tab with match/selected-opportunity scope, play/pause, step, seek,
-  restart, and speed controls.
+- Playback controls embedded in **Opportunities**, with match/selected-opportunity
+  scope, play/pause, step, seek, restart, and speed controls.
 - A pure playback cue adapter that preserves parser order, counter-attack ownership,
   tactical events, recoveries, and arbitrarily repeated shots after goalkeeper rebounds.
 - Progressive schematic pitch highlighting, significant-moment vignettes, timeline
@@ -22,6 +22,9 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   before playback advances to the next step.
 - Five-times-slower 1× timing and a persistent, colorized source-narrative panel during
   playback, including the observed raw line for tactical events.
+- Chronological playback now reveals and scrolls the existing opportunity/event list,
+  progressively exposes each parsed step, and draws its corresponding pitch line; the
+  separate Playback tab has been removed.
 
 ## [0.5.0] — Firefox compatibility
 

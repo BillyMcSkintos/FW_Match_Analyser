@@ -885,7 +885,7 @@ function nm(p, minute) {
 }
 
 function renderStepDetail(opp) {
-  const rows = opp.steps.map(s => {
+  const rows = opp.steps.map((s, stepIndex) => {
     const v   = s.values || {};
     const cls = STEP_TYPE_CSS[s.stepType] || 'stype-mid';
     const lbl = s.isPenalty ? 'PENALTY' : (STEP_TYPE_LBL[s.stepType] || s.stepType);
@@ -937,7 +937,7 @@ function renderStepDetail(opp) {
         break;
     }
 
-    return `<tr class="step-tr${caCls}">
+    return `<tr class="step-tr${caCls}" data-step-index="${stepIndex}">
       <td><span class="stype ${cls}">${lbl}</span></td>
       <td style="padding-left:6px">${players}</td>
       <td style="padding-left:8px">${vals}</td>
@@ -950,7 +950,7 @@ function renderStepDetail(opp) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TACTICAL EVENTS  — substitutions, position/mentality/style changes, half time
 // ─────────────────────────────────────────────────────────────────────────────
-const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','PREFERRED_SIDE_CHANGE','ISOLATE','HALF_TIME','EXTRA_TIME_BREAK']);
+const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','PREFERRED_SIDE_CHANGE','ISOLATE','TIREDNESS','INJURY','HALF_TIME','EXTRA_TIME_BREAK']);
 
 function lastName(p) { return escapeHtml(p?.name?.split(' ').pop()) || '?'; }
 
@@ -984,11 +984,12 @@ function impactTag(ev) {
   return ` <span class="tac-impact">opp/15m ${imp.beforeRate}→${imp.afterRate} · shots ${imp.beforeShotPct??'–'}%→${imp.afterShotPct??'–'}%</span>`;
 }
 
-function renderTacticalRow(ev) {
-  if (ev.type === 'HALF_TIME') return `<div class="tac-half">— HALF TIME —</div>`;
+function renderTacticalRow(ev, tacticalEventIndex = null) {
+  const eventAttr = Number.isInteger(tacticalEventIndex) ? ` data-event-idx="${tacticalEventIndex}"` : '';
+  if (ev.type === 'HALF_TIME') return `<div class="tac-half"${eventAttr}>— HALF TIME —</div>`;
   if (ev.type === 'EXTRA_TIME_BREAK') {
     const label = ev.period === 'halfway' ? 'END OF FIRST EXTRA TIME' : 'EXTRA TIME';
-    return `<div class="tac-half">— ${label} —</div>`;
+    return `<div class="tac-half"${eventAttr}>— ${label} —</div>`;
   }
 
   // ISOLATE carries issuingTeam instead of team, so parseMatch never resolves its teamSide.
@@ -1024,8 +1025,16 @@ function renderTacticalRow(ev) {
       icon = '⚙';
       text = `Preferred side <span class="p-arr">→</span> ${escapeHtml(ev.preferredSide)}${impactTag(ev)}`;
       break;
+    case 'TIREDNESS':
+      icon = '◷';
+      text = `${lastName(ev.player)} <span class="p-arr">→</span> ${escapeHtml(String(ev.level || 'tired').replaceAll('_', ' ').toLowerCase())}`;
+      break;
+    case 'INJURY':
+      icon = '✚';
+      text = `${lastName(ev.player)} <span class="p-arr">→</span> ${escapeHtml(String(ev.severity || 'injured').toLowerCase())} injury`;
+      break;
   }
-  return `<div class="tac-row" style="border-left-color:${col}">
+  return `<div class="tac-row"${eventAttr} style="border-left-color:${col}">
     <span class="tac-min">${ev.minute!=null ? ev.minute+"'" : ''}</span>
     <span class="tac-icon" style="color:${col}">${icon}</span>
     <span class="tac-text">${text}</span>
@@ -1039,13 +1048,16 @@ function buildTimeline(match) {
   // renumber it.
   (match.opportunities || []).forEach((opp, idx) => {
     if (_teamFilter !== 'both' && opp.teamSide !== _teamFilter) return;
-    items.push({ kind:'opp', minute: opp.minute ?? 0, opp, idx });
+    items.push({ kind:'opp', minute: opp.minute ?? 0, sequence: opp.sequence ?? idx, opp, idx });
   });
-  (match.tacticalEvents || []).filter(ev => TACTICAL_KINDS.has(ev.type))
-    .filter(ev => _teamFilter === 'both' || !ev.teamSide || ev.teamSide === _teamFilter)
-    .forEach(ev => items.push({ kind:'tactical', minute: ev.minute ?? 0, ev }));
-  // Tactical events for a minute are shown just before that minute's opportunities.
-  items.sort((a, b) => (a.minute - b.minute) || (a.kind === 'tactical' ? -1 : 1));
+  (match.tacticalEvents || []).forEach((ev, tacticalEventIndex) => {
+    if (!TACTICAL_KINDS.has(ev.type)) return;
+    if (_teamFilter !== 'both' && ev.teamSide && ev.teamSide !== _teamFilter) return;
+    items.push({ kind:'tactical', minute: ev.minute ?? 0, sequence: ev.sequence ?? tacticalEventIndex, ev, tacticalEventIndex });
+  });
+  // Same-minute events use the parser's shared narrative sequence, so the list order is
+  // exactly the order playback consumes instead of grouping all tactics before attacks.
+  items.sort((a, b) => (a.minute - b.minute) || (a.sequence - b.sequence) || (a.kind === 'tactical' ? -1 : 1));
   return items;
 }
 
@@ -1169,7 +1181,7 @@ function renderOppList(match) {
   const items = buildTimeline(match);
   let html = '';
   items.forEach(item => {
-    if (item.kind === 'tactical') { html += renderTacticalRow(item.ev); return; }
+    if (item.kind === 'tactical') { html += renderTacticalRow(item.ev, item.tacticalEventIndex); return; }
 
     const { opp, idx } = item;
     const isHome = opp.teamSide === 'home';
@@ -1789,7 +1801,7 @@ let _teamFilter   = 'both'; // 'both' | 'home' | 'away' — which opportunities 
 let _lastRenderedScrape = null;
 const _playbackState = {
   cues: [], index: 0, playing: false, speed: 1, scope: 'match', timer: null,
-  reducedMotion: false, narrativeKey: null,
+  reducedMotion: false, narrativeKey: null, listKey: null, engaged: false,
 };
 
 // The pitch is a static shell of layered <g> groups, rebuilt only when what they show
@@ -2294,7 +2306,7 @@ function clickOpp(idx) {
 // for the pitch highlight/chain detail, clickOpp for the expand + selection state — rather
 // than building a second, parallel selection system just for the timeline.
 function clickTimelineMarker(idx) {
-  if (isPlaybackTabActive()) {
+  if (isPlaybackActive()) {
     seekPlaybackToOpportunity(idx);
     return;
   }
@@ -2800,8 +2812,12 @@ function playbackStepArrow(cue) {
     arrowHead(from.x, from.y, to.x, to.y, col, 1, 2) + `</g>`;
 }
 
-function isPlaybackTabActive() {
-  return document.querySelector('.tab.active')?.dataset.tab === 'playback';
+function isOpportunitiesTabActive() {
+  return document.querySelector('.tab.active')?.dataset.tab === 'opps';
+}
+
+function isPlaybackActive() {
+  return _playbackState.engaged && isOpportunitiesTabActive();
 }
 
 function pbTextElement(className, text) {
@@ -2828,7 +2844,45 @@ function showPlaybackNarrative(cue) {
   showNarrativeLines(lines);
 }
 
-function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
+function clearPlaybackListState() {
+  document.querySelectorAll('.playback-current').forEach(el => el.classList.remove('playback-current'));
+  document.querySelectorAll('.step-tr.playback-future').forEach(el => el.classList.remove('playback-future'));
+  document.querySelectorAll('.step-block').forEach(el => el.classList.remove('open'));
+  _playbackState.listKey = null;
+}
+
+function renderPlaybackListCue(cue) {
+  clearPlaybackListState();
+  if (!cue) return;
+  let target = null;
+  if (Number.isInteger(cue.opportunityIndex)) {
+    const row = document.querySelector(`.opp-row[data-idx="${cue.opportunityIndex}"]`);
+    const block = $(`steps-${cue.opportunityIndex}`);
+    row?.classList.add('playback-current');
+    block?.classList.add('open');
+    const visibleThrough = cue.kind === 'opportunity.end' ? Number.POSITIVE_INFINITY
+      : (Number.isInteger(cue.stepIndex) ? cue.stepIndex : -1);
+    block?.querySelectorAll('.step-tr').forEach(stepRow => {
+      const stepIndex = Number(stepRow.dataset.stepIndex);
+      stepRow.classList.toggle('playback-future', stepIndex > visibleThrough);
+      stepRow.classList.toggle('playback-current', stepIndex === cue.stepIndex);
+      if (stepIndex === cue.stepIndex) target = stepRow;
+    });
+    target ||= row;
+  } else if (Number.isInteger(cue.tacticalEventIndex)) {
+    target = document.querySelector(`[data-event-idx="${cue.tacticalEventIndex}"]`);
+    target?.classList.add('playback-current');
+  }
+  const key = Number.isInteger(cue.opportunityIndex)
+    ? `opportunity-${cue.opportunityIndex}-step-${cue.stepIndex ?? 'start'}`
+    : `event-${cue.tacticalEventIndex}`;
+  if (target && _playbackState.listKey !== key) {
+    target.scrollIntoView({ behavior: _playbackState.reducedMotion ? 'auto' : 'smooth', block: 'center' });
+    _playbackState.listKey = key;
+  }
+}
+
+function renderPlaybackCurrentCue(paintPitch = isPlaybackActive()) {
   const cue = _playbackState.cues[_playbackState.index] || null;
   const card = $('playback-card');
   const progress = $('pb-progress');
@@ -2875,6 +2929,7 @@ function renderPlaybackCurrentCue(paintPitch = isPlaybackTabActive()) {
   setHighlight(chain + playbackStepArrow(cue) + playbackCueOverlay(cue), !!(chain || cue.actor));
   $('pass-summary').style.display = 'none';
   showPlaybackNarrative(cue);
+  renderPlaybackListCue(cue);
   markTimelineSelected(cue.opportunityIndex);
 }
 
@@ -2886,7 +2941,7 @@ function clearPlaybackTimer() {
 function pausePlayback() {
   clearPlaybackTimer();
   _playbackState.playing = false;
-  renderPlaybackCurrentCue(false);
+  renderPlaybackCurrentCue(isPlaybackActive());
 }
 
 function schedulePlaybackAdvance() {
@@ -2910,6 +2965,12 @@ function schedulePlaybackAdvance() {
 function togglePlayback() {
   if (_playbackState.playing) { pausePlayback(); return; }
   if (!_playbackState.cues.length) return;
+  _playbackState.engaged = true;
+  if (_playbackState.scope === 'match' && _teamFilter !== 'both') {
+    _teamFilter = 'both';
+    renderOppSummaryAndList();
+    buildBasePitch();
+  }
   if (_playbackState.index >= _playbackState.cues.length - 1) _playbackState.index = 0;
   _playbackState.playing = true;
   renderPlaybackCurrentCue(true);
@@ -2918,6 +2979,7 @@ function togglePlayback() {
 
 function seekPlayback(index) {
   if (!_playbackState.cues.length) return;
+  _playbackState.engaged = true;
   _playbackState.index = Math.max(0, Math.min(_playbackState.cues.length - 1, Number(index) || 0));
   renderPlaybackCurrentCue(true);
   if (_playbackState.playing) schedulePlaybackAdvance();
@@ -2947,11 +3009,13 @@ function rebuildPlaybackCues() {
   _playbackState.cues = _match ? buildPlaybackCues(_match,
     opportunityIndex === null ? {} : { opportunityIndex }) : [];
   _playbackState.index = 0;
-  renderPlaybackCurrentCue(isPlaybackTabActive());
+  renderPlaybackCurrentCue(isPlaybackActive());
 }
 
 function resetPlaybackForMatch() {
   _playbackState.narrativeKey = null;
+  _playbackState.listKey = null;
+  _playbackState.engaged = false;
   _playbackState.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   _playbackState.scope = $('pb-scope')?.value || 'match';
   _playbackState.speed = Number($('pb-speed')?.value) || 1;
@@ -2962,13 +3026,13 @@ function resetPlaybackForMatch() {
 // TABS
 // ─────────────────────────────────────────────────────────────────────────────
 function activateTab(name) {
-  const wasPlayback = isPlaybackTabActive();
-  if (wasPlayback && name !== 'playback') pausePlayback();
+  const leavingOpportunities = isOpportunitiesTabActive() && name !== 'opps';
+  if (leavingOpportunities && _playbackState.engaged) pausePlayback();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   $(`panel-${name}`)?.classList.add('active');
-  if (name === 'playback') renderPlaybackCurrentCue(true);
-  else {
+  if (name === 'opps' && _playbackState.engaged) renderPlaybackCurrentCue(true);
+  else if (name !== 'opps') {
     $('playback-vignette')?.classList.remove('visible');
     const pinnedIdx = getPinnedIdx();
     if (pinnedIdx !== null && _match) showPitchDetail(_match.opportunities[pinnedIdx], true);
@@ -2981,14 +3045,14 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 // OPP LIST EVENT DELEGATION  (inline handlers blocked by extension CSP)
 // ─────────────────────────────────────────────────────────────────────────────
 document.addEventListener('mouseover', e => {
-  if (isPlaybackTabActive()) return;
+  if (isPlaybackActive()) return;
   const row = e.target.closest('.opp-row');
   if (row?.dataset.idx !== undefined) { hoverOpp(parseInt(row.dataset.idx)); return; }
   const marker = e.target.closest('.tl-marker');
   if (marker?.dataset.idx !== undefined) hoverOpp(parseInt(marker.dataset.idx));
 });
 document.addEventListener('mouseout', e => {
-  if (isPlaybackTabActive()) return;
+  if (isPlaybackActive()) return;
   const row = e.target.closest('.opp-row');
   if (row && !row.contains(e.relatedTarget)) { unhoverOpp(); return; }
   const marker = e.target.closest('.tl-marker');
@@ -2996,7 +3060,14 @@ document.addEventListener('mouseout', e => {
 });
 document.addEventListener('click', e => {
   const row = e.target.closest('.opp-row');
-  if (row?.dataset.idx !== undefined) clickOpp(parseInt(row.dataset.idx));
+  if (row?.dataset.idx !== undefined) {
+    if (isPlaybackActive()) {
+      _playbackState.engaged = false;
+      pausePlayback();
+      clearPlaybackListState();
+    }
+    clickOpp(parseInt(row.dataset.idx));
+  }
 
   const marker = e.target.closest('.tl-marker');
   if (marker?.dataset.idx !== undefined) clickTimelineMarker(parseInt(marker.dataset.idx));
