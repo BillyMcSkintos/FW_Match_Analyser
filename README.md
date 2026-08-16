@@ -24,7 +24,7 @@ aligned instead of overwriting the preceding attempt.
   opportunity; goals are unmistakable, clicking a marker jumps to it wherever
   you are in the app.
 - **Statistics** — separate home/away player tables for minutes, saves,
-  interceptions, blocks, tackles, passes, assists, shots, goals, and the first
+  interceptions, blocks, tackles, attempted/completed passes, assists, shots, goals, and the first
   tired/very-tired report, followed by shot/pass type breakdowns, long-ball summary,
   delivery to forwards, and an offense-vs-defense scatter. Player totals include only
   named actions observed in the report; anonymous blocks are not guessed.

@@ -13,9 +13,10 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 
 ### Added
 - Home and away player-statistics tables with derived minutes played, saves,
-  interceptions, blocks, tackles, passes, assists, shots, goals, and the first
+  interceptions, blocks, tackles, attempted/completed passes, assists, shots, goals, and the first
   tired/very-tired report minute. Totals remain limited to named actions observed in
   the match report, so anonymous defensive actions are never assigned speculatively.
+  Positions appear beside player names rather than consuming a separate table column.
 
 ## [0.5.0] — Firefox compatibility
 

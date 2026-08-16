@@ -1486,20 +1486,22 @@ function renderPlayerStatisticsTeam(label, side, players) {
   if (!players.length) return '';
   const count = n => n ? escapeHtml(String(n)) : '<span class="zero">–</span>';
   const minute = n => n == null ? '<span class="zero">–</span>' : `<span class="minute">${escapeHtml(String(n))}'</span>`;
-  const rows = players.map(p => `<tr>
-    <td title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</td>
-    <td class="pos">${escapeHtml((p.positions || []).join('/') || '—')}</td>
+  const rows = players.map(p => {
+    const positions = (p.positions || []).join('/');
+    return `<tr>
+    <td title="${escapeHtml(p.name)}">${escapeHtml(p.name)}${positions ? ` <span class="player-position">[${escapeHtml(positions)}]</span>` : ''}</td>
     <td>${escapeHtml(String(p.minutesPlayed))}</td>
     <td>${count(p.saves)}</td><td>${count(p.interceptions)}</td><td>${count(p.blocks)}</td>
-    <td>${count(p.tackles)}</td><td>${count(p.passes)}</td><td>${count(p.assists)}</td>
+    <td>${count(p.tackles)}</td><td>${count(p.passes)}</td><td>${count(p.completedPasses)}</td><td>${count(p.assists)}</td>
     <td>${count(p.shots)}</td><td>${count(p.goals)}</td>
     <td>${minute(p.tiredMinute)}</td><td>${minute(p.veryTiredMinute)}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
   return `<div class="player-stats-team ${side}"><span>${escapeHtml(label)}</span><span>${players.length} players observed</span></div>
     <div class="player-stats-scroll"><table class="player-stats-table">
-      <thead><tr><th>Player</th><th>Pos</th><th title="Minutes played">Min</th>
+      <thead><tr><th>Player</th><th title="Minutes played">Min</th>
         <th>Saves</th><th title="Interceptions">Interceptions</th><th>Blocks</th><th>Tackles</th>
-        <th>Passes</th><th>Assists</th><th>Shots</th><th>Goals</th>
+        <th title="Passes attempted">Passes</th><th title="Completed passes">Completed</th><th>Assists</th><th>Shots</th><th>Goals</th>
         <th title="First minute reported tired">Tired (min)</th>
         <th title="First minute reported very tired">Very tired (min)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;

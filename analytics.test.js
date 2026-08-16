@@ -451,22 +451,35 @@ test('playerStatistics aggregates named actions, substitution minutes, assists, 
       'Away Defender': { team: 'Away Team', side: 'away', positions: ['CB'] },
       'Away Keeper': { team: 'Away Team', side: 'away', positions: ['GK'] },
       'Home Sub': { team: 'Home Team', side: 'home', positions: ['FW'] },
+      'Home Controller': { team: 'Home Team', side: 'home', positions: ['CM'] },
     },
     opportunities: [{ minute: 20, steps: [
       { stepType: 'PB_PASS', from: { name: 'Home Passer', position: 'CM' },
         to: { name: 'Home Scorer', position: 'FW' }, attackingTeam: 'Home Team', attackingSide: 'home' },
       { stepType: 'PB_DUEL', defender: { name: 'Away Defender', position: 'CB' },
-        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'BLOCKED',
+        attacker: { name: 'Home Scorer', position: 'FW' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'WON',
         values: { tackle: { value: 55 } } },
       { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
         gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
         defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GOAL' },
+    ] }, { minute: 25, steps: [
+      { stepType: 'START_PASS', from: { name: 'Other Home', position: 'RB' },
+        to: { name: 'Blocked Target', position: 'RW' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'MID_DUEL', attacker: { name: 'Blocked Target', position: 'RW' },
+        defender: { name: 'Away Defender', position: 'CB' }, defendingTeam: 'Away Team',
+        defendingSide: 'away', outcome: 'BLOCKED', values: {} },
     ] }, { minute: 30, steps: [
       { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
         gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
         defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'SAVED' },
       { stepType: 'MID_DUEL', defender: { name: 'Away Keeper', position: 'GK' },
         defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GK_INTERCEPT', values: {} },
+    ] }, { minute: 35, steps: [
+      { stepType: 'START_PASS', from: { name: 'Home Passer', position: 'CM' },
+        to: { name: 'Home Controller', position: 'CM' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'MID_DUEL', attacker: { name: 'Home Controller', position: 'CM' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'POSSESSION', values: {} },
     ] }],
     tacticalEvents: [
       { type: 'TIREDNESS', minute: 40, sequence: 40, team: 'Home Team', teamSide: 'home',
@@ -484,7 +497,8 @@ test('playerStatistics aggregates named actions, substitution minutes, assists, 
   const defender = stats.away.find(p => p.name === 'Away Defender');
   const keeper = stats.away.find(p => p.name === 'Away Keeper');
 
-  assert.equal(passer.passes, 1);
+  assert.equal(passer.passes, 2);
+  assert.equal(passer.completedPasses, 2, 'a pass completed by a shot and one completed by possession both count');
   assert.equal(passer.assists, 1);
   assert.equal(scorer.shots, 2);
   assert.equal(scorer.goals, 1);
@@ -496,6 +510,8 @@ test('playerStatistics aggregates named actions, substitution minutes, assists, 
   assert.equal(defender.blocks, 1);
   assert.equal(keeper.saves, 1);
   assert.equal(keeper.interceptions, 1);
+  assert.equal(stats.home.find(p => p.name === 'Other Home').completedPasses, 0,
+    'a blocked pass is not completed even if play continues afterward');
 });
 
 test('playerStatistics uses a 120-minute duration when extra time is observed', () => {

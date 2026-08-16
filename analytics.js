@@ -532,7 +532,7 @@ function playerStatistics(match) {
     if (!byKey[key]) byKey[key] = {
       name: player.name, team: team || player.team || null, side: resolvedSide,
       positions: [], minutesPlayed: 0, saves: 0, interceptions: 0, blocks: 0,
-      tackles: 0, passes: 0, assists: 0, shots: 0, goals: 0,
+      tackles: 0, passes: 0, completedPasses: 0, assists: 0, shots: 0, goals: 0,
       tiredMinute: null, veryTiredMinute: null,
     };
     const rec = byKey[key];
@@ -547,12 +547,37 @@ function playerStatistics(match) {
       if (position && !rec.positions.includes(position)) rec.positions.push(position);
   }
 
+  // A pass is completed only when its named target takes possession, or when that
+  // target takes the ensuing shot. A merely attempted reception, foul, clearance, or
+  // anonymous block does not become a completion; stop at the next pass so a later
+  // recovery cannot retroactively complete the earlier attempt.
+  const passCompleted = (steps, passIndex) => {
+    const targetName = steps[passIndex]?.to?.name;
+    if (!targetName) return false;
+    for (let i = passIndex + 1; i < steps.length; i++) {
+      const next = steps[i];
+      if (PASS_STEP_KINDS.includes(next.stepType)) return false;
+      if (DUEL_STEP_TYPES.includes(next.stepType) &&
+          (next.attacker || next.dribbler)?.name === targetName) {
+        if (next.outcome === 'POSSESSION') return true;
+        if (next.outcome !== 'WON') return false;
+      }
+      if (SHOT_STEP_TYPES.includes(next.stepType)) return next.shooter?.name === targetName;
+    }
+    return false;
+  };
+
   for (const opp of (match?.opportunities || [])) {
     let pendingAssist = null;
-    for (const step of (opp.steps || [])) {
+    const steps = opp.steps || [];
+    for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+      const step = steps[stepIndex];
       if (PASS_STEP_KINDS.includes(step.stepType) && step.from) {
         const passer = ensure(step.from, step.attackingTeam, step.attackingSide);
-        if (passer) passer.passes++;
+        if (passer) {
+          passer.passes++;
+          if (passCompleted(steps, stepIndex)) passer.completedPasses++;
+        }
         pendingAssist = step.to?.name ? { passer: step.from, targetName: step.to.name,
           team: step.attackingTeam, side: step.attackingSide } : null;
       }

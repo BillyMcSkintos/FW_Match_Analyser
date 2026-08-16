@@ -706,8 +706,11 @@ test('player statistics render separate home and away tables with requested colu
   assert.match(html, /Away Team/);
   assert.match(html, /Minutes played/);
   assert.match(html, /Interceptions/);
+  assert.match(html, /Completed passes/);
   assert.match(html, /Very tired \(min\)/);
   assert.match(html, /Away Keeper/);
+  assert.match(html, /Home Player <span class="player-position">\[CM\]<\/span>/);
+  assert.doesNotMatch(html, /<th>Pos<\/th>/);
   assert.match(html, /70'/);
 });
 
