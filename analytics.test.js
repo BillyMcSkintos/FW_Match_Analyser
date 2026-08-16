@@ -443,6 +443,140 @@ test('playerDuelAnalysis aggregates attacker and defender duels separately per p
   assert.equal(byPlayer['Player C'].shooting.attempts, 0);
 });
 
+test('playerStatistics aggregates named actions, substitution minutes, assists, and fatigue', () => {
+  const match = {
+    playerRegistry: {
+      'Home Passer': { team: 'Home Team', side: 'home', positions: ['CM'] },
+      'Home Scorer': { team: 'Home Team', side: 'home', positions: ['FW'] },
+      'Away Defender': { team: 'Away Team', side: 'away', positions: ['CB'] },
+      'Away Keeper': { team: 'Away Team', side: 'away', positions: ['GK'] },
+      'Home Sub': { team: 'Home Team', side: 'home', positions: ['FW'] },
+      'Home Controller': { team: 'Home Team', side: 'home', positions: ['CM'] },
+    },
+    opportunities: [{ minute: 20, steps: [
+      { stepType: 'PB_PASS', from: { name: 'Home Passer', position: 'CM' },
+        to: { name: 'Home Scorer', position: 'FW' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'PB_DUEL', defender: { name: 'Away Defender', position: 'CB' },
+        attacker: { name: 'Home Scorer', position: 'FW' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'WON',
+        values: { tackle: { value: 55 } } },
+      { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
+        gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GOAL' },
+    ] }, { minute: 25, steps: [
+      { stepType: 'START_PASS', from: { name: 'Other Home', position: 'RB' },
+        to: { name: 'Blocked Target', position: 'RW' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'MID_DUEL', attacker: { name: 'Blocked Target', position: 'RW' },
+        defender: { name: 'Away Defender', position: 'CB' }, defendingTeam: 'Away Team',
+        defendingSide: 'away', outcome: 'BLOCKED', values: {} },
+    ] }, { minute: 30, steps: [
+      { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
+        gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'SAVED' },
+      { stepType: 'MID_DUEL', defender: { name: 'Away Keeper', position: 'GK' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GK_INTERCEPT', values: {} },
+    ] }, { minute: 35, steps: [
+      { stepType: 'START_PASS', from: { name: 'Home Passer', position: 'CM' },
+        to: { name: 'Home Controller', position: 'CM' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'MID_DUEL', attacker: { name: 'Home Controller', position: 'CM' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'POSSESSION', values: {} },
+    ] }, { minute: 50, steps: [
+      { stepType: 'MID_DUEL', attacker: { name: 'Home Controller', position: 'CM' },
+        defender: { name: 'Away Defender', position: 'CB' },
+        fouler: { name: 'Away Defender', position: 'CB' },
+        yellowCard: { name: 'Away Defender', position: 'CB' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'FOUL', values: {} },
+    ] }],
+    tacticalEvents: [
+      { type: 'TIREDNESS', minute: 38, sequence: 38, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Passer', position: 'CM' }, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 40, sequence: 40, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Scorer', position: 'FW' }, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 44, sequence: 44, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Passer', position: 'CM' }, level: 'VERY_TIRED' },
+      { type: 'HALF_TIME', minute: 45, sequence: 45 },
+      { type: 'INJURY', minute: 50, sequence: 50, team: 'Away Team', teamSide: 'away',
+        player: { name: 'Away Defender', position: 'CB' }, severity: 'LIGHT' },
+      { type: 'SUBSTITUTION', minute: 60, sequence: 60, team: 'Home Team', teamSide: 'home',
+        playerOut: { name: 'Home Scorer', position: 'FW' }, playerIn: { name: 'Home Sub', position: 'FW' } },
+      { type: 'TIREDNESS', minute: 68, sequence: 68, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Passer', position: 'CM' }, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 75, sequence: 75, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Sub', position: 'FW' }, level: 'VERY_TIRED' },
+      { type: 'TIREDNESS', minute: 82, sequence: 82, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Passer', position: 'CM' }, level: 'VERY_TIRED' },
+    ],
+  };
+  const stats = A.playerStatistics(match);
+  const passer = stats.home.find(p => p.name === 'Home Passer');
+  const scorer = stats.home.find(p => p.name === 'Home Scorer');
+  const sub = stats.home.find(p => p.name === 'Home Sub');
+  const defender = stats.away.find(p => p.name === 'Away Defender');
+  const keeper = stats.away.find(p => p.name === 'Away Keeper');
+
+  assert.equal(passer.passes, 2);
+  assert.equal(passer.completedPasses, 2, 'a pass completed by a shot and one completed by possession both count');
+  assert.equal(passer.passCompletionPct, 100);
+  assert.deepEqual(passer.tiredMinutes, [38, 68]);
+  assert.deepEqual(passer.veryTiredMinutes, [44, 82]);
+  assert.equal(passer.assists, 1);
+  assert.equal(scorer.shots, 2);
+  assert.equal(scorer.shotsOnTarget, 2);
+  assert.equal(scorer.goals, 1);
+  assert.equal(scorer.minutesPlayed, 60);
+  assert.deepEqual(scorer.tiredMinutes, [40]);
+  assert.equal(sub.minutesPlayed, 30);
+  assert.deepEqual(sub.veryTiredMinutes, [75]);
+  assert.equal(defender.tackles, 1);
+  assert.equal(defender.blocks, 1);
+  assert.equal(defender.fouls, 1);
+  assert.deepEqual(defender.yellowCards, [50]);
+  assert.deepEqual(defender.injuries, [{ minute: 50, severity: 'LIGHT' }]);
+  assert.equal(keeper.saves, 1);
+  assert.equal(keeper.shotsFaced, 2);
+  assert.equal(keeper.interceptions, 1);
+  assert.equal(stats.home.find(p => p.name === 'Other Home').completedPasses, 0,
+    'a blocked pass is not completed even if play continues afterward');
+  const scorerIndex = stats.home.findIndex(p => p.name === 'Home Scorer');
+  assert.equal(stats.home[scorerIndex + 1].name, 'Home Sub', 'the replacement is grouped after the outgoing player');
+  assert.equal(sub.replacedPlayer, 'Home Scorer');
+  assert.equal(sub.substitutedInMinute, 60);
+});
+
+test('playerStatistics uses a 120-minute duration when extra time is observed', () => {
+  const stats = A.playerStatistics({
+    playerRegistry: { Veteran: { team: 'Home', side: 'home', positions: ['CM'] } },
+    opportunities: [],
+    tacticalEvents: [{ type: 'EXTRA_TIME_BREAK', minute: 90, sequence: 1 }],
+  });
+  assert.equal(stats.matchMinutes, 120);
+  assert.equal(stats.home[0].minutesPlayed, 120);
+});
+
+test('playerStatistics assigns each player to one canonical side despite conflicting action stamps', () => {
+  const stats = A.playerStatistics({
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team' },
+    playerRegistry: {
+      Tsur: { team: 'Away Team', side: 'away', positions: ['FW'] },
+      Ryszawa: { team: 'Home Team', side: 'home', positions: ['LW'] },
+    },
+    opportunities: [{ minute: 10, steps: [
+      { stepType: 'SHOT', shooter: { name: 'Tsur', position: 'FW', team: 'Home Team', side: 'home' },
+        attackingTeam: 'Home Team', attackingSide: 'home', outcome: 'MISSED' },
+      { stepType: 'SHOT', shooter: { name: 'Ryszawa', position: 'LW', team: 'Home Team', side: 'home' },
+        attackingTeam: 'Home Team', attackingSide: 'home', outcome: 'MISSED' },
+    ] }],
+    tacticalEvents: [{ type: 'TIREDNESS', minute: 70, sequence: 70,
+      team: 'Away Team', teamSide: 'away', player: { name: 'Ryszawa', position: 'LW' }, level: 'TIRED' }],
+  });
+  assert.deepEqual(stats.home.map(p => p.name), []);
+  assert.deepEqual(stats.away.map(p => p.name).sort(), ['Ryszawa', 'Tsur']);
+  assert.equal(stats.away.find(p => p.name === 'Tsur').shots, 1,
+    'registry ownership must override a conflicting action stamp');
+  assert.equal(stats.away.find(p => p.name === 'Ryszawa').shots, 1,
+    'an explicit team-attributed event must override weaker registry/action evidence');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // assistanceAnalysis
 // ─────────────────────────────────────────────────────────────────────────────

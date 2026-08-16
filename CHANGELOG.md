@@ -11,6 +11,21 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 
 ## [Unreleased]
 
+### Added
+- Home and away player-statistics tables with derived minutes played, saves,
+  interceptions, blocks, tackles, attempted/completed passes, pass percentage, assists,
+  shots, goalkeeper shots faced, shots on target, goals, fouls, cards, injuries, and every tired/very-tired report
+  minute. Totals remain limited to named actions observed in
+  the match report, so anonymous defensive actions are never assigned speculatively.
+  Positions, yellow cards, and injuries appear beside player names rather than consuming
+  separate table columns; completed passes appear in parentheses after pass attempts;
+  substitutes are grouped directly beneath the player they replaced.
+
+### Fixed
+- Player statistics resolve one canonical home/away side per player, preferring explicit
+  team-attributed match events over weaker action-level stamps, so one player cannot be
+  duplicated under both teams.
+
 ## [0.5.0] — Firefox compatibility
 
 ### Added

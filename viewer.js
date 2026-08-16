@@ -1482,8 +1482,57 @@ function renderGroupedStats(stats) {
   return html;
 }
 
-function renderStats(stats, homeTeam, awayTeam, opportunities) {
+function renderPlayerStatisticsTeam(label, side, players) {
+  if (!players.length) return '';
+  const count = n => n ? escapeHtml(String(n)) : '<span class="zero">–</span>';
+  const minutes = values => values?.length
+    ? `<span class="minute">${values.map(n => `${escapeHtml(String(n))}'`).join(', ')}</span>`
+    : '<span class="zero">–</span>';
+  const rows = players.map(p => {
+    const positions = (p.positions || []).join('/');
+    const flags = [
+      ...(p.yellowCards || []).map(n => `<span class="player-flag card" title="Yellow card at ${escapeHtml(String(n))}'">🟨 ${escapeHtml(String(n))}'</span>`),
+      ...(p.injuries || []).map(injury => {
+        const severity = injury.severity ? `${injury.severity[0]}${injury.severity.slice(1).toLowerCase()} ` : '';
+        return `<span class="player-flag injury" title="${escapeHtml(severity)}injury at ${escapeHtml(String(injury.minute))}'">🩹 ${escapeHtml(severity)}${escapeHtml(String(injury.minute))}'</span>`;
+      }),
+    ].join('');
+    return `<tr>
+    <td class="${p.replacedPlayer ? 'player-substitute' : ''}" title="${escapeHtml(p.name)}${p.replacedPlayer ? ` replaced ${escapeHtml(p.replacedPlayer)} at ${escapeHtml(String(p.substitutedInMinute))}'` : ''}">${p.replacedPlayer ? '<span class="sub-arrow">↳</span>' : ''}${escapeHtml(p.name)}${positions ? ` <span class="player-position">[${escapeHtml(positions)}]</span>` : ''}${p.substitutedInMinute != null ? ` <span class="sub-minute">${escapeHtml(String(p.substitutedInMinute))}'</span>` : ''}${flags ? ` <span class="player-flags">${flags}</span>` : ''}</td>
+    <td>${escapeHtml(String(p.minutesPlayed))}</td>
+    <td>${count(p.shotsFaced)}</td><td>${count(p.saves)}</td><td>${count(p.interceptions)}</td><td>${count(p.blocks)}</td>
+    <td>${count(p.tackles)}</td><td>${escapeHtml(String(p.passes))} (${escapeHtml(String(p.completedPasses))})</td>
+    <td>${p.passCompletionPct == null ? '<span class="zero">–</span>' : `${escapeHtml(String(p.passCompletionPct))}%`}</td>
+    <td>${count(p.assists)}</td><td>${count(p.shots)}</td><td>${count(p.shotsOnTarget)}</td><td>${count(p.goals)}</td><td>${count(p.fouls)}</td>
+    <td>${minutes(p.tiredMinutes)}</td><td>${minutes(p.veryTiredMinutes)}</td>
+  </tr>`;
+  }).join('');
+  return `<div class="player-stats-team ${side}"><span>${escapeHtml(label)}</span><span>${players.length} players observed</span></div>
+    <div class="player-stats-scroll"><table class="player-stats-table">
+      <thead><tr><th>Player</th><th title="Minutes played">Min</th>
+        <th title="All parsed shots naming this goalkeeper">Shots faced</th><th>Saves</th><th title="Interceptions">Interceptions</th><th>Blocks</th><th>Tackles</th>
+        <th title="Passes attempted, with completed passes in parentheses">Passes (completed)</th><th title="Completed passes divided by attempted passes">Pass %</th>
+        <th>Assists</th><th>Shots</th><th title="Shots resulting in a goal, save, or goalkeeper fumble">On target</th><th>Goals</th><th>Fouls</th>
+        <th title="First minute reported tired">Tired (min)</th>
+        <th title="First minute reported very tired">Very tired (min)</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderPlayerStatistics(match, homeTeam, awayTeam) {
+  if (!match) return '';
+  const data = playerStatistics(match);
+  if (!data.home.length && !data.away.length && !data.unresolved.length) return '';
+  let html = `<div class="player-stats"><div class="dist-title">Player Statistics</div>
+    <div class="qt-hint">${escapeHtml(data.note)} Minutes are derived from observed substitutions over a ${data.matchMinutes}-minute match.</div>`;
+  html += renderPlayerStatisticsTeam(homeTeam || match.meta?.homeTeam || 'Home', 'home', data.home);
+  html += renderPlayerStatisticsTeam(awayTeam || match.meta?.awayTeam || 'Away', 'away', data.away);
+  html += renderPlayerStatisticsTeam('Side unresolved', 'unknown', data.unresolved);
+  return html + '</div>';
+}
+
+function renderStats(stats, homeTeam, awayTeam, opportunities, match = null) {
   let html = `<div style="padding:8px;overflow-y:auto;flex:1">`;
+  html += renderPlayerStatistics(match, homeTeam, awayTeam);
   if (stats && Object.keys(stats).length) {
     html += renderGroupedStats(stats);
   } else {
@@ -2109,7 +2158,7 @@ function render(scrape) {
   // try/catch and degrades to a locally-scoped, escaped error message in its own panel
   // rather than either crashing the whole viewer or silently swallowing the exception
   // (still logged via console.error either way).
-  renderPanelSafely('panel-stats', 'Statistics', () => renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities));
+  renderPanelSafely('panel-stats', 'Statistics', () => renderStats(scrape.statistics, scrape.homeTeam, scrape.awayTeam, opportunities, _match));
   renderPanelSafely('panel-squad', 'Tactics', () => renderSquadTab(_match));
   renderPanelSafely('panel-analysis', 'Analysis', () => renderAnalysisTab(_match));
 
