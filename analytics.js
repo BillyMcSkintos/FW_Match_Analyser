@@ -510,6 +510,138 @@ function playerDuelAnalysis(match) {
   return byPlayer;
 }
 
+// DERIVED player match totals. Every count below comes from a named player in the
+// parsed narrative; anonymous wording such as "blocked by the opponent player" is
+// deliberately not assigned to somebody by position or proximity. FinalWhistle's
+// report currently exposes substitutions but not a complete starting-lineup roster,
+// so minutes are available for every observed participant while a player who never
+// appears anywhere in the report cannot be added honestly.
+function playerStatistics(match) {
+  const byKey = {};
+  const keyOf = (name, side) => `${side || 'unknown'}\u0000${name}`;
+  const ensure = (player, team = null, side = null) => {
+    if (!player?.name) return null;
+    const resolvedSide = side || player.side || null;
+    const key = keyOf(player.name, resolvedSide);
+    const unresolvedKey = keyOf(player.name, null);
+    if (resolvedSide && !byKey[key] && byKey[unresolvedKey]) {
+      byKey[key] = byKey[unresolvedKey];
+      byKey[key].side = resolvedSide;
+      delete byKey[unresolvedKey];
+    }
+    if (!byKey[key]) byKey[key] = {
+      name: player.name, team: team || player.team || null, side: resolvedSide,
+      positions: [], minutesPlayed: 0, saves: 0, interceptions: 0, blocks: 0,
+      tackles: 0, passes: 0, assists: 0, shots: 0, goals: 0,
+      tiredMinute: null, veryTiredMinute: null,
+    };
+    const rec = byKey[key];
+    if (!rec.team && (team || player.team)) rec.team = team || player.team;
+    if (player.position && !rec.positions.includes(player.position)) rec.positions.push(player.position);
+    return rec;
+  };
+
+  for (const [name, info] of Object.entries(match?.playerRegistry || {})) {
+    const rec = ensure({ name, side: info.side, team: info.team }, info.team, info.side);
+    if (rec) for (const position of (info.positions || []))
+      if (position && !rec.positions.includes(position)) rec.positions.push(position);
+  }
+
+  for (const opp of (match?.opportunities || [])) {
+    let pendingAssist = null;
+    for (const step of (opp.steps || [])) {
+      if (PASS_STEP_KINDS.includes(step.stepType) && step.from) {
+        const passer = ensure(step.from, step.attackingTeam, step.attackingSide);
+        if (passer) passer.passes++;
+        pendingAssist = step.to?.name ? { passer: step.from, targetName: step.to.name,
+          team: step.attackingTeam, side: step.attackingSide } : null;
+      }
+      if (DUEL_STEP_TYPES.includes(step.stepType)) {
+        if (step.defender && step.values?.tackle?.value != null) {
+          const defender = ensure(step.defender, step.defendingTeam, step.defendingSide);
+          if (defender) defender.tackles++;
+        }
+        if (step.outcome === 'BLOCKED' && step.defender) {
+          const blocker = ensure(step.defender, step.defendingTeam, step.defendingSide);
+          if (blocker) blocker.blocks++;
+        }
+        if (step.outcome === 'GK_INTERCEPT' && step.defender) {
+          const interceptor = ensure(step.defender, step.defendingTeam, step.defendingSide);
+          if (interceptor) interceptor.interceptions++;
+        }
+      }
+      if (SHOT_STEP_TYPES.includes(step.stepType)) {
+        const shooter = ensure(step.shooter, step.attackingTeam, step.attackingSide);
+        if (shooter) {
+          shooter.shots++;
+          if (step.outcome === 'GOAL') {
+            shooter.goals++;
+            if (pendingAssist?.targetName === step.shooter?.name) {
+              const assister = ensure(pendingAssist.passer, pendingAssist.team, pendingAssist.side);
+              if (assister && assister !== shooter) assister.assists++;
+            }
+          }
+        }
+        const goalkeeper = ensure(step.gk, step.defendingTeam, step.defendingSide);
+        if (goalkeeper && step.outcome === 'SAVED') goalkeeper.saves++;
+      }
+    }
+  }
+
+  const events = [...(match?.tacticalEvents || [])]
+    .sort((a, b) => (a.sequence ?? a.minute ?? 0) - (b.sequence ?? b.minute ?? 0));
+  for (const ev of events) {
+    if (ev.type === 'SUBSTITUTION') {
+      ensure(ev.playerOut, ev.team, ev.teamSide);
+      ensure(ev.playerIn, ev.team, ev.teamSide);
+    } else if (ev.player) {
+      const rec = ensure(ev.player, ev.team, ev.teamSide);
+      if (rec && ev.type === 'TIREDNESS') {
+        if (ev.level === 'TIRED' && rec.tiredMinute == null) rec.tiredMinute = ev.minute;
+        if (ev.level === 'VERY_TIRED' && rec.veryTiredMinute == null) rec.veryTiredMinute = ev.minute;
+      }
+    }
+  }
+
+  const observedMinutes = [
+    ...(match?.opportunities || []).map(o => o.minute || 0),
+    ...events.map(e => e.minute || 0),
+  ];
+  const hasExtraTime = events.some(e => e.type === 'EXTRA_TIME_BREAK') || Math.max(0, ...observedMinutes) > 90;
+  const matchMinutes = hasExtraTime ? 120 : 90;
+  const incoming = new Set(events
+    .filter(e => e.type === 'SUBSTITUTION' && e.playerIn?.name)
+    .map(e => keyOf(e.playerIn.name, e.teamSide || e.playerIn.side)));
+  const onSince = {};
+  for (const [key] of Object.entries(byKey)) onSince[key] = incoming.has(key) ? null : 0;
+  for (const ev of events.filter(e => e.type === 'SUBSTITUTION')) {
+    const outKey = ev.playerOut?.name ? keyOf(ev.playerOut.name, ev.teamSide || ev.playerOut.side) : null;
+    const inKey = ev.playerIn?.name ? keyOf(ev.playerIn.name, ev.teamSide || ev.playerIn.side) : null;
+    if (outKey && byKey[outKey] && onSince[outKey] != null) {
+      byKey[outKey].minutesPlayed += Math.max(0, ev.minute - onSince[outKey]);
+      onSince[outKey] = null;
+    }
+    if (inKey && byKey[inKey] && onSince[inKey] == null) onSince[inKey] = ev.minute;
+  }
+  for (const [key, start] of Object.entries(onSince))
+    if (start != null) byKey[key].minutesPlayed += Math.max(0, matchMinutes - start);
+
+  const positionOrder = ['GK','LB','LWB','CB','RB','RWB','DM','LM','CM','RM','LW','OM','RW','FW'];
+  const sortPlayers = (a, b) => {
+    const ai = positionOrder.indexOf(a.positions[0]);
+    const bi = positionOrder.indexOf(b.positions[0]);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.name.localeCompare(b.name);
+  };
+  const players = Object.values(byKey).sort(sortPlayers);
+  return {
+    home: players.filter(p => p.side === 'home'),
+    away: players.filter(p => p.side === 'away'),
+    unresolved: players.filter(p => p.side !== 'home' && p.side !== 'away'),
+    matchMinutes,
+    note: 'Observed named actions only. Anonymous blocks are not assigned to a player; players never named in the report cannot be reconstructed from the current scrape.',
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Assistance analysis
 // ─────────────────────────────────────────────────────────────────────────────
@@ -908,7 +1040,7 @@ if (typeof module !== 'undefined' && module.exports) {
     turnoverAnalysis, classifyTurnoverCause,
     defensiveFailureChains, findFirstFailedDefensiveStage,
     phasePerformance, compareAroundEvent, compareAdjacentPhases,
-    playerDuelAnalysis, assistanceAnalysis, fatigueImpact,
+    playerDuelAnalysis, playerStatistics, assistanceAnalysis, fatigueImpact,
     laneAnalysis, counterAttackAnalysis, setPieceAnalysis, goalkeeperAnalysis,
     shotProfileAnalysis, passProfileAnalysis, playerInvolvementChains,
   };

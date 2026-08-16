@@ -443,6 +443,71 @@ test('playerDuelAnalysis aggregates attacker and defender duels separately per p
   assert.equal(byPlayer['Player C'].shooting.attempts, 0);
 });
 
+test('playerStatistics aggregates named actions, substitution minutes, assists, and fatigue', () => {
+  const match = {
+    playerRegistry: {
+      'Home Passer': { team: 'Home Team', side: 'home', positions: ['CM'] },
+      'Home Scorer': { team: 'Home Team', side: 'home', positions: ['FW'] },
+      'Away Defender': { team: 'Away Team', side: 'away', positions: ['CB'] },
+      'Away Keeper': { team: 'Away Team', side: 'away', positions: ['GK'] },
+      'Home Sub': { team: 'Home Team', side: 'home', positions: ['FW'] },
+    },
+    opportunities: [{ minute: 20, steps: [
+      { stepType: 'PB_PASS', from: { name: 'Home Passer', position: 'CM' },
+        to: { name: 'Home Scorer', position: 'FW' }, attackingTeam: 'Home Team', attackingSide: 'home' },
+      { stepType: 'PB_DUEL', defender: { name: 'Away Defender', position: 'CB' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'BLOCKED',
+        values: { tackle: { value: 55 } } },
+      { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
+        gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GOAL' },
+    ] }, { minute: 30, steps: [
+      { stepType: 'SHOT', shooter: { name: 'Home Scorer', position: 'FW' },
+        gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'SAVED' },
+      { stepType: 'MID_DUEL', defender: { name: 'Away Keeper', position: 'GK' },
+        defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'GK_INTERCEPT', values: {} },
+    ] }],
+    tacticalEvents: [
+      { type: 'TIREDNESS', minute: 40, sequence: 40, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Scorer', position: 'FW' }, level: 'TIRED' },
+      { type: 'SUBSTITUTION', minute: 60, sequence: 60, team: 'Home Team', teamSide: 'home',
+        playerOut: { name: 'Home Scorer', position: 'FW' }, playerIn: { name: 'Home Sub', position: 'FW' } },
+      { type: 'TIREDNESS', minute: 75, sequence: 75, team: 'Home Team', teamSide: 'home',
+        player: { name: 'Home Sub', position: 'FW' }, level: 'VERY_TIRED' },
+    ],
+  };
+  const stats = A.playerStatistics(match);
+  const passer = stats.home.find(p => p.name === 'Home Passer');
+  const scorer = stats.home.find(p => p.name === 'Home Scorer');
+  const sub = stats.home.find(p => p.name === 'Home Sub');
+  const defender = stats.away.find(p => p.name === 'Away Defender');
+  const keeper = stats.away.find(p => p.name === 'Away Keeper');
+
+  assert.equal(passer.passes, 1);
+  assert.equal(passer.assists, 1);
+  assert.equal(scorer.shots, 2);
+  assert.equal(scorer.goals, 1);
+  assert.equal(scorer.minutesPlayed, 60);
+  assert.equal(scorer.tiredMinute, 40);
+  assert.equal(sub.minutesPlayed, 30);
+  assert.equal(sub.veryTiredMinute, 75);
+  assert.equal(defender.tackles, 1);
+  assert.equal(defender.blocks, 1);
+  assert.equal(keeper.saves, 1);
+  assert.equal(keeper.interceptions, 1);
+});
+
+test('playerStatistics uses a 120-minute duration when extra time is observed', () => {
+  const stats = A.playerStatistics({
+    playerRegistry: { Veteran: { team: 'Home', side: 'home', positions: ['CM'] } },
+    opportunities: [],
+    tacticalEvents: [{ type: 'EXTRA_TIME_BREAK', minute: 90, sequence: 1 }],
+  });
+  assert.equal(stats.matchMinutes, 120);
+  assert.equal(stats.home[0].minutesPlayed, 120);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // assistanceAnalysis
 // ─────────────────────────────────────────────────────────────────────────────

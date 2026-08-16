@@ -684,6 +684,33 @@ test('the stats panel escapes an </span><svg onload=...> breakout payload in a s
   assert.ok(!html.includes('<svg onload=alert(1)>'), 'raw breakout markup must not reach the stats panel');
 });
 
+test('player statistics render separate home and away tables with requested columns', () => {
+  const ctx = loadViewerContext();
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team' },
+    playerRegistry: {
+      'Home Player': { team: 'Home Team', side: 'home', positions: ['CM'] },
+      'Away Keeper': { team: 'Away Team', side: 'away', positions: ['GK'] },
+    },
+    opportunities: [{ minute: 15, steps: [{
+      stepType: 'SHOT', shooter: { name: 'Home Player', position: 'CM' },
+      gk: { name: 'Away Keeper', position: 'GK' }, attackingTeam: 'Home Team', attackingSide: 'home',
+      defendingTeam: 'Away Team', defendingSide: 'away', outcome: 'SAVED',
+    }] }],
+    tacticalEvents: [{ type: 'TIREDNESS', minute: 70, sequence: 70, team: 'Home Team', teamSide: 'home',
+      player: { name: 'Home Player', position: 'CM' }, level: 'VERY_TIRED' }],
+  };
+  const html = ctx.renderStats({}, 'Home Team', 'Away Team', match.opportunities, match);
+  assert.match(html, /Player Statistics/);
+  assert.match(html, /Home Team/);
+  assert.match(html, /Away Team/);
+  assert.match(html, /Minutes played/);
+  assert.match(html, /Interceptions/);
+  assert.match(html, /Very tired \(min\)/);
+  assert.match(html, /Away Keeper/);
+  assert.match(html, /70'/);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Backward compatibility with old storage.local scrape objects
 // ─────────────────────────────────────────────────────────────────────────────

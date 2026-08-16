@@ -176,6 +176,18 @@ select:disabled{opacity:.4}
 .dist-title{font-size:11px;color:#9fb0c4;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin:14px 0 8px;padding-top:10px;border-top:1px solid #1a2540}
 .dist-title:first-child{margin-top:2px;padding-top:0;border-top:none}
 .qt-hint{font-size:10px;color:#5a6f8c;margin-bottom:7px;line-height:1.5}
+.player-stats{margin-bottom:16px}
+.player-stats-team{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0 5px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+.player-stats-team.home{color:#6fb3d9}.player-stats-team.away{color:#e0925c}.player-stats-team.unknown{color:#9aa5b5}
+.player-stats-scroll{overflow-x:auto;border:1px solid #1a2540;border-radius:5px;scrollbar-width:thin;scrollbar-color:#2a3a5a transparent}
+.player-stats-table{width:100%;min-width:910px;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums}
+.player-stats-table th{position:sticky;top:0;z-index:2;background:#0b1423;color:#6f82a0;padding:6px 5px;border-bottom:1px solid #243653;text-align:center;white-space:nowrap;font-size:9px;line-height:1.2;text-transform:uppercase;letter-spacing:.4px}
+.player-stats-table td{padding:5px;border-bottom:1px solid #101d31;text-align:center;color:#9fb0c4}
+.player-stats-table tbody tr:last-child td{border-bottom:none}
+.player-stats-table tbody tr:hover td{background:#0c1728}
+.player-stats-table th:first-child,.player-stats-table td:first-child{position:sticky;left:0;text-align:left;min-width:145px;max-width:190px}
+.player-stats-table th:first-child{z-index:3}.player-stats-table td:first-child{z-index:1;background:#07101d;color:#d6e2f0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.player-stats-table .pos{color:#6f82a0;white-space:nowrap}.player-stats-table .minute{color:#d4a850}.player-stats-table .zero{color:#354762}
 .no-data{display:flex;align-items:center;justify-content:center;flex:1;color:#8a9ab0;font-size:14px}
 </style>
 </head>
