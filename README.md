@@ -20,6 +20,12 @@ aligned instead of overwriting the preceding attempt.
   counter-attacks keep an earlier blocked pass as subdued context while emphasizing the
   route that continued, and the selected opportunity's complete narrative scrolls beside
   the pitch.
+- **Opportunity playback** — controls embedded directly in Opportunities let you play,
+  pause, seek, step, restart, and change speed through the parsed
+  match narrative. The pitch progressively reveals passes, duels, recoveries, rebound
+  shots, cards, breaks, and tactical events; playback can cover the whole match or one
+  selected opportunity. Role-based movement is clearly labeled **schematic** because
+  FinalWhistle does not report exact coordinates.
 - **Match timeline** — a 0–90′ strip above the list with one marker per
   opportunity; goals are unmistakable, clicking a marker jumps to it wherever
   you are in the app.
@@ -143,7 +149,9 @@ confirmed when the first AMO submission is made.
 ## Usage
 
 Click **Scrape** while a match report is open to pull in that match. **Load**
-reopens the last scrape from storage; **Clear** wipes it. Hover an opportunity
+reopens the last scrape from storage; **Clear** wipes it. Use the playback controls at
+the top of **Opportunities** to reveal the match in sequence or switch the scope to one
+selected opportunity. Hover an opportunity
 row to preview it on the pitch, click to pin that view, click a timeline
 marker to jump straight to any moment in the match. Pick a scope from the
 export dropdown (**Full view** / **Pinned possession** / **Overview**) and
@@ -168,7 +176,12 @@ FinalWhistle match page
   analytics.js ──────────────  derived tactical analysis
         │                      {opportunityFunnel, phasePerformance,
         │                       defensiveFailureChains, counterAttackAnalysis, ...}
-        ▼
+        ├───────────────────────────────────┐
+        ▼                                   ▼
+  playback.js ───────────────  ordered presentation cues
+        │                      (pure; schematic, no reparsing)
+        └─────────────────────┬─────────────┘
+                              ▼
    viewer.js   ──────────────  DOM/SVG rendering + interaction
 ```
 
@@ -179,7 +192,7 @@ and reusable outside the viewer. `parser.js`'s own tactical-construct audit comm
 `analytics.js`'s file header explain what each layer does and does not claim — see
 [Evidence model](#evidence-model) above.
 
-Because `viewer.html` loads `parser.js`, `analytics.js`, and `viewer.js` as classic
+Because `viewer.html` loads `parser.js`, `analytics.js`, `playback.js`, and `viewer.js` as classic
 `<script>` tags (not ES modules) they all share one global lexical scope — a duplicate
 top-level `const`/`let` name across two of those files is a real `SyntaxError` at load
 time that `node --check` (which only ever sees one file at a time) cannot catch. This
@@ -212,13 +225,14 @@ npm run verify        # all of the above checks — run before opening a PR
 |---|---|
 | `parser.js` | Raw narrative + telemetry → trusted match model. Merges the narrative and telemetry stream into a flat, per-opportunity `steps[]` model, reconstructs tactical state/phases. See the file header and the tactical-construct audit comment above `parseNarrative`. |
 | `analytics.js` | Match model → derived tactical analysis (opportunity funnel, turnovers, defensive failure chains, tactical-phase performance, player/GK/set-piece/shot/pass profiles). Pure — no DOM or WebExtension APIs. See the file header for the evidence-category convention every function follows. |
+| `playback.js` | Parsed match model → immutable, ordered playback cues. Pure — it neither reparses narrative nor invents coordinates, and preserves step-level ownership and repeated rebound shots. |
 | `viewer.js` | Renders the whole UI from a parsed match + its analysis — pitch, timeline, list, and tabs. See the file header for a section map. |
-| `viewer.html` | Markup + styling for the viewer page; also the canonical script-load order (`utils.js`, `parser.js`, `analytics.js`, `viewer.js`) that `smoke.test.js` derives its check from. |
+| `viewer.html` | Markup + styling for the viewer page; also the canonical script-load order (`utils.js`, `parser.js`, `analytics.js`, `playback.js`, `viewer.js`) that `smoke.test.js` derives its check from. |
 | `scraper.js` | FinalWhistle DOM → raw scrape payload, including the five kickoff tactics. Injected into the page tab on demand and safe to inject repeatedly. |
 | `background.js` | Cross-browser extension lifecycle — toolbar click handling, tab selection, script injection, and `storage.local` persistence. |
 | `utils.js` | Tiny `browser`/`chrome` API boundary plus genuinely shared tab-selection logic used by both background and viewer contexts. |
 | `fixtures/` | Sanitized narrative/telemetry/expected-invariant fixtures used by `integration.test.js`; see `fixtures/README.md` for scenario coverage and provenance. |
-| `*.test.js` | `parser.test.js`, `viewer.test.js`, `scraper.test.js`, `analytics.test.js`, `background.test.js` — one per layer above. `integration.test.js` — parser→analytics contract tests. `smoke.test.js` — the script-load-order check described above. `static-audit.test.js` — the forbidden-sinks/secret-scan checks described in [Security](#security). |
+| `*.test.js` | `parser.test.js`, `viewer.test.js`, `scraper.test.js`, `analytics.test.js`, `playback.test.js`, `background.test.js` — one per layer above. `integration.test.js` — parser→analytics contract tests. `smoke.test.js` — the script-load-order check described above. `static-audit.test.js` — the forbidden-sinks/secret-scan checks described in [Security](#security). |
 
 ### Contributing
 

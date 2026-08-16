@@ -36,8 +36,10 @@ function extractScriptOrder(htmlPath) {
 function makeStubElement() {
   return {
     style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    children: [], textContent: '', innerHTML: '',
+    children: [], textContent: '', innerHTML: '', value: '', max: '', disabled: false,
     addEventListener(){}, querySelector(){ return null; }, querySelectorAll(){ return []; },
+    setAttribute(){}, removeAttribute(){}, scrollIntoView(){},
+    replaceChildren(){},
   };
 }
 
@@ -67,6 +69,8 @@ test('viewer.html\'s own script order loads cleanly into one shared context, wit
     },
     location: { search: '' },
     URLSearchParams,
+    setTimeout, clearTimeout,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   };
   const context = vm.createContext(sandbox);
 
@@ -91,6 +95,7 @@ test('viewer.html\'s own script order loads cleanly into one shared context, wit
     'parseMatch', 'tacticalStateAt', 'buildTacticalPhases', 'phaseIdAt',       // parser.js
     'opportunityFunnel', 'phasePerformance', 'defensiveFailureChains',        // analytics.js
     'turnoverAnalysis', 'counterAttackAnalysis',                              // analytics.js
+    'buildPlaybackCues', 'playbackPartialOpportunity',                        // playback.js
     'render', 'escapeHtml',                                                   // viewer.js
   ];
   for (const name of expectedGlobals) {

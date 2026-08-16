@@ -16,8 +16,10 @@ const path = require('node:path');
 function makeStubElement() {
   const el = {
     style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    children: [], textContent: '', innerHTML: '',
+    children: [], textContent: '', innerHTML: '', value: '', max: '', disabled: false,
     addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+    setAttribute() {}, removeAttribute() {}, scrollIntoView() {},
+    replaceChildren() {},
   };
   return el;
 }
@@ -27,6 +29,7 @@ function loadViewerContext({ namespace = 'chrome' } = {}) {
   const utilsSrc = fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8');
   const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
   const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
+  const playbackSrc = fs.readFileSync(path.join(__dirname, 'playback.js'), 'utf8');
   const api = {
     storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     runtime: { getURL: p => `${namespace === 'browser' ? 'moz-extension' : 'chrome-extension'}://test/${p}`, getManifest: () => ({ version: '0.5.0-test' }), sendMessage: async () => ({}) },
@@ -44,16 +47,19 @@ function loadViewerContext({ namespace = 'chrome' } = {}) {
     },
     location: { search: '' },
     URLSearchParams,
+    setTimeout, clearTimeout,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   };
   sandbox[namespace] = api;
   const context = vm.createContext(sandbox);
   // parser.js's functions (qualityLabel, qv, tierColor-adjacent) and analytics.js's
   // functions (phasePerformance, opportunityFunnel, ...) are referenced by viewer.js, so
   // load both into the same context first, mirroring viewer.html's own script order:
-  // utils.js, parser.js, analytics.js, viewer.js.
+  // utils.js, parser.js, analytics.js, playback.js, viewer.js.
   vm.runInContext(utilsSrc, context, { filename: 'utils.js' });
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
   vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
+  vm.runInContext(playbackSrc, context, { filename: 'playback.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });
   return context;
 }
@@ -63,6 +69,55 @@ test('viewer initializes with either WebExtension API namespace', () => {
   assert.equal(chromium.ext, chromium.chrome);
   const firefox = loadViewerContext({ namespace: 'browser' });
   assert.equal(firefox.ext, firefox.browser);
+});
+
+test('playback focuses the current rebound shot instead of the first shot', () => {
+  const ctx = loadViewerContext();
+  const match = {
+    opportunities: [{ teamSide: 'away', isCounterAttack: true, steps: [
+      { stepType: 'SHOT', isCA: true, attackingSide: 'away', shooter: { name: 'First', position: 'FW' }, gk: { name: 'Keeper', position: 'GK' }, outcome: 'FUMBLED', values: {} },
+      { stepType: 'SHOT', isCA: true, attackingSide: 'away', shooter: { name: 'Second', position: 'FW' }, gk: { name: 'Keeper', position: 'GK' }, outcome: 'SAVED', values: {} },
+    ] }], tacticalEvents: [],
+  };
+  const secondStrike = ctx.buildPlaybackCues(match).filter(c => c.kind === 'shot.strike')[1];
+  const partial = ctx.playbackPartialOpportunity(match, secondStrike);
+  assert.equal(ctx.stepsToChain(partial).shName, 'Second');
+  assert.equal(ctx.stepsToChain(partial).gkRes, 'save');
+});
+
+test('playback draws each directional action as its own arrow', () => {
+  const ctx = loadViewerContext();
+  const pass = ctx.playbackStepArrow({
+    kind: 'flow.pass', attackingSide: 'home', defendingSide: 'away',
+    actor: { position: 'RB' }, target: { position: 'CM' },
+  });
+  const shot = ctx.playbackStepArrow({
+    kind: 'shot.strike', attackingSide: 'away', defendingSide: 'home',
+    actor: { position: 'FW' },
+  });
+  assert.match(pass, /class="pb-step-arrow"/);
+  assert.match(pass, /pathLength="1"/);
+  assert.match(shot, /class="pb-step-arrow"/);
+  assert.notEqual(pass, shot);
+});
+
+test('Opportunities markup exposes chronological events and step anchors to playback', () => {
+  const ctx = loadViewerContext();
+  const eventHtml = ctx.renderOppList({ opportunities: [], tacticalEvents: [
+    { type: 'TIREDNESS', minute: 34, player: { name: 'Player One', position: 'CM' }, level: 'TIRED', teamSide: 'home' },
+    { type: 'INJURY', minute: 35, player: { name: 'Player Two', position: 'CB' }, severity: 'LIGHT', teamSide: 'away' },
+  ] });
+  assert.match(eventHtml, /data-event-idx="0"/);
+  assert.match(eventHtml, /data-event-idx="1"/);
+  assert.match(eventHtml, />One <span/);
+  assert.match(eventHtml, />Two <span/);
+
+  const stepsHtml = ctx.renderStepDetail({ minute: 1, steps: [
+    { stepType: 'START_PASS', from: { name: 'A', position: 'RB' }, to: { name: 'B', position: 'CM' }, values: {}, outcome: null },
+    { stepType: 'SHOT', shooter: { name: 'B', position: 'FW' }, gk: { name: 'C', position: 'GK' }, values: {}, outcome: 'SAVED' },
+  ] });
+  assert.match(stepsHtml, /data-step-index="0"/);
+  assert.match(stepsHtml, /data-step-index="1"/);
 });
 
 test('diagnostic report includes the match URL and exact unknown lines with nearby context', () => {
@@ -736,6 +791,7 @@ function loadViewerContextWithStableElements() {
   const utilsSrc = fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8');
   const parserSrc = fs.readFileSync(path.join(__dirname, 'parser.js'), 'utf8');
   const analyticsSrc = fs.readFileSync(path.join(__dirname, 'analytics.js'), 'utf8');
+  const playbackSrc = fs.readFileSync(path.join(__dirname, 'playback.js'), 'utf8');
   const elements = new Map();
   const getEl = (id) => {
     if (!elements.has(id)) elements.set(id, makeStubElement());
@@ -758,14 +814,37 @@ function loadViewerContextWithStableElements() {
     },
     location: { search: '' },
     URLSearchParams,
+    setTimeout, clearTimeout,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   };
   const context = vm.createContext(sandbox);
   vm.runInContext(utilsSrc, context, { filename: 'utils.js' });
   vm.runInContext(parserSrc, context, { filename: 'parser.js' });
   vm.runInContext(analyticsSrc, context, { filename: 'analytics.js' });
+  vm.runInContext(playbackSrc, context, { filename: 'playback.js' });
   vm.runInContext(src, context, { filename: 'viewer.js' });
   return { context, elements };
 }
+
+test('playback keeps the source opportunity narrative visible beside the pitch', () => {
+  const { context: ctx, elements } = loadViewerContextWithStableElements();
+  vm.runInContext(`_match = {
+    playerRegistry: {},
+    opportunities: [{ rawLines: ['Minute 1', 'Opportunity for Home Team.', 'Player A [FW] made good shot.'] }]
+  }; _playbackState.narrativeKey = null;`, ctx);
+  ctx.showPlaybackNarrative({ opportunityIndex: 0, tacticalEventIndex: null });
+  assert.equal(elements.get('raw-panel').style.display, 'block');
+  assert.match(elements.get('raw-text').innerHTML, /Opportunity for Home Team/);
+  assert.match(elements.get('raw-text').innerHTML, /made <span[^>]*>good<\/span> shot/);
+});
+
+test('playback shows the observed raw narrative for a tactical-only cue', () => {
+  const { context: ctx, elements } = loadViewerContextWithStableElements();
+  vm.runInContext(`_match = { playerRegistry: {}, opportunities: [] }; _playbackState.narrativeKey = null;`, ctx);
+  ctx.showPlaybackNarrative({ opportunityIndex: null, tacticalEventIndex: 2, rawText: 'Home Team - Change mentality to ATTACKING' });
+  assert.equal(elements.get('raw-panel').style.display, 'block');
+  assert.match(elements.get('raw-text').innerHTML, /Change mentality to ATTACKING/);
+});
 
 test('a throwing Analysis panel degrades locally and does not blank out Stats/Squad/Pitch', () => {
   const { context: ctx, elements } = loadViewerContextWithStableElements();

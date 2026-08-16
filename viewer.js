@@ -274,8 +274,15 @@ function stepsToChain(opp) {
   const midDuel   = primaryMidPair?.duel || find('MID_DUEL');
   const pbPass    = find('PB_PASS');
   const pbDuel    = find('PB_DUEL');
-  const shot      = find('SHOT');
-  const fkShot    = find('FK_SHOT');
+  // Playback reveals a rebound sequence one step at a time. Its partial opportunity
+  // carries the exact source-step index to focus, so a later shot must replace the
+  // usual first-shot summary instead of visually jumping back to the initial attempt.
+  const focusedStep = Number.isInteger(opp.playbackFocusStepIndex)
+    ? steps[opp.playbackFocusStepIndex] : null;
+  const focusedShot = focusedStep && ['SHOT', 'FK_SHOT'].includes(focusedStep.stepType) &&
+    (!isCA || focusedStep.isCA) ? focusedStep : null;
+  const shot      = focusedShot?.stepType === 'SHOT' ? focusedShot : find('SHOT');
+  const fkShot    = focusedShot?.stepType === 'FK_SHOT' ? focusedShot : find('FK_SHOT');
   const sp        = find('SP_PASS');
 
   const effectiveMid  = midDuel;
@@ -878,7 +885,7 @@ function nm(p, minute) {
 }
 
 function renderStepDetail(opp) {
-  const rows = opp.steps.map(s => {
+  const rows = opp.steps.map((s, stepIndex) => {
     const v   = s.values || {};
     const cls = STEP_TYPE_CSS[s.stepType] || 'stype-mid';
     const lbl = s.isPenalty ? 'PENALTY' : (STEP_TYPE_LBL[s.stepType] || s.stepType);
@@ -930,7 +937,7 @@ function renderStepDetail(opp) {
         break;
     }
 
-    return `<tr class="step-tr${caCls}">
+    return `<tr class="step-tr${caCls}" data-step-index="${stepIndex}">
       <td><span class="stype ${cls}">${lbl}</span></td>
       <td style="padding-left:6px">${players}</td>
       <td style="padding-left:8px">${vals}</td>
@@ -943,7 +950,7 @@ function renderStepDetail(opp) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TACTICAL EVENTS  — substitutions, position/mentality/style changes, half time
 // ─────────────────────────────────────────────────────────────────────────────
-const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','PREFERRED_SIDE_CHANGE','ISOLATE','HALF_TIME','EXTRA_TIME_BREAK']);
+const TACTICAL_KINDS = new Set(['SUBSTITUTION','POSITION_CHANGE','MENTALITY_CHANGE','STYLE_CHANGE','PREFERRED_SIDE_CHANGE','ISOLATE','TIREDNESS','INJURY','HALF_TIME','EXTRA_TIME_BREAK']);
 
 function lastName(p) { return escapeHtml(p?.name?.split(' ').pop()) || '?'; }
 
@@ -977,11 +984,12 @@ function impactTag(ev) {
   return ` <span class="tac-impact">opp/15m ${imp.beforeRate}→${imp.afterRate} · shots ${imp.beforeShotPct??'–'}%→${imp.afterShotPct??'–'}%</span>`;
 }
 
-function renderTacticalRow(ev) {
-  if (ev.type === 'HALF_TIME') return `<div class="tac-half">— HALF TIME —</div>`;
+function renderTacticalRow(ev, tacticalEventIndex = null) {
+  const eventAttr = Number.isInteger(tacticalEventIndex) ? ` data-event-idx="${tacticalEventIndex}"` : '';
+  if (ev.type === 'HALF_TIME') return `<div class="tac-half"${eventAttr}>— HALF TIME —</div>`;
   if (ev.type === 'EXTRA_TIME_BREAK') {
     const label = ev.period === 'halfway' ? 'END OF FIRST EXTRA TIME' : 'EXTRA TIME';
-    return `<div class="tac-half">— ${label} —</div>`;
+    return `<div class="tac-half"${eventAttr}>— ${label} —</div>`;
   }
 
   // ISOLATE carries issuingTeam instead of team, so parseMatch never resolves its teamSide.
@@ -1017,8 +1025,16 @@ function renderTacticalRow(ev) {
       icon = '⚙';
       text = `Preferred side <span class="p-arr">→</span> ${escapeHtml(ev.preferredSide)}${impactTag(ev)}`;
       break;
+    case 'TIREDNESS':
+      icon = '◷';
+      text = `${lastName(ev.player)} <span class="p-arr">→</span> ${escapeHtml(String(ev.level || 'tired').replaceAll('_', ' ').toLowerCase())}`;
+      break;
+    case 'INJURY':
+      icon = '✚';
+      text = `${lastName(ev.player)} <span class="p-arr">→</span> ${escapeHtml(String(ev.severity || 'injured').toLowerCase())} injury`;
+      break;
   }
-  return `<div class="tac-row" style="border-left-color:${col}">
+  return `<div class="tac-row"${eventAttr} style="border-left-color:${col}">
     <span class="tac-min">${ev.minute!=null ? ev.minute+"'" : ''}</span>
     <span class="tac-icon" style="color:${col}">${icon}</span>
     <span class="tac-text">${text}</span>
@@ -1032,13 +1048,16 @@ function buildTimeline(match) {
   // renumber it.
   (match.opportunities || []).forEach((opp, idx) => {
     if (_teamFilter !== 'both' && opp.teamSide !== _teamFilter) return;
-    items.push({ kind:'opp', minute: opp.minute ?? 0, opp, idx });
+    items.push({ kind:'opp', minute: opp.minute ?? 0, sequence: opp.sequence ?? idx, opp, idx });
   });
-  (match.tacticalEvents || []).filter(ev => TACTICAL_KINDS.has(ev.type))
-    .filter(ev => _teamFilter === 'both' || !ev.teamSide || ev.teamSide === _teamFilter)
-    .forEach(ev => items.push({ kind:'tactical', minute: ev.minute ?? 0, ev }));
-  // Tactical events for a minute are shown just before that minute's opportunities.
-  items.sort((a, b) => (a.minute - b.minute) || (a.kind === 'tactical' ? -1 : 1));
+  (match.tacticalEvents || []).forEach((ev, tacticalEventIndex) => {
+    if (!TACTICAL_KINDS.has(ev.type)) return;
+    if (_teamFilter !== 'both' && ev.teamSide && ev.teamSide !== _teamFilter) return;
+    items.push({ kind:'tactical', minute: ev.minute ?? 0, sequence: ev.sequence ?? tacticalEventIndex, ev, tacticalEventIndex });
+  });
+  // Same-minute events use the parser's shared narrative sequence, so the list order is
+  // exactly the order playback consumes instead of grouping all tactics before attacks.
+  items.sort((a, b) => (a.minute - b.minute) || (a.sequence - b.sequence) || (a.kind === 'tactical' ? -1 : 1));
   return items;
 }
 
@@ -1162,7 +1181,7 @@ function renderOppList(match) {
   const items = buildTimeline(match);
   let html = '';
   items.forEach(item => {
-    if (item.kind === 'tactical') { html += renderTacticalRow(item.ev); return; }
+    if (item.kind === 'tactical') { html += renderTacticalRow(item.ev, item.tacticalEventIndex); return; }
 
     const { opp, idx } = item;
     const isHome = opp.teamSide === 'home';
@@ -1780,6 +1799,10 @@ let _teamFilter   = 'both'; // 'both' | 'home' | 'away' — which opportunities 
 // parameter goes out of scope once render() returns — JPG export needs it later (for the
 // filename and the export header), so it's kept here rather than re-threaded everywhere.
 let _lastRenderedScrape = null;
+const _playbackState = {
+  cues: [], index: 0, playing: false, speed: 1, scope: 'match', timer: null,
+  reducedMotion: false, narrativeKey: null, listKey: null, engaged: false,
+};
 
 // The pitch is a static shell of layered <g> groups, rebuilt only when what they show
 // actually changes (a fresh scrape, or a Home/Away/Both filter switch — both go through
@@ -2094,6 +2117,7 @@ function render(scrape) {
     $('opp-list').innerHTML = `<div class="no-data">${scrape.narrative ? 'Parse failed.' : 'No match data.'}</div>`;
     $('timeline-wrap').style.display = 'none';
     $('timeline-wrap').innerHTML = '';
+    resetPlaybackForMatch();
     return;
   }
 
@@ -2118,6 +2142,7 @@ function render(scrape) {
     _hFlowData = buildBaseFlow(opportunities, 'home');
     _aFlowData = buildBaseFlow(opportunities, 'away');
     buildBasePitch();
+    resetPlaybackForMatch();
   } catch(e) {
     showErrors([...(scrape.errors||[]), 'PITCH_ERROR: '+e.message]);
   }
@@ -2158,12 +2183,16 @@ function showPitchDetail(opp, dim) {
   const ps = $('pass-summary');
   ps.style.display = 'block';
   ps.innerHTML = buildPassSummary(opp);
-  if (opp.rawLines?.length) {
-    $('raw-panel').style.display = 'block';
-    $('raw-text').innerHTML = opp.rawLines
-      .map(l => colorizeNarrativeLine(l, _match.playerRegistry))
-      .join('\n');
-  }
+  showNarrativeLines(opp.rawLines);
+}
+
+function showNarrativeLines(lines) {
+  const panel = $('raw-panel');
+  if (!lines?.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  $('raw-text').innerHTML = lines
+    .map(line => colorizeNarrativeLine(line, _match?.playerRegistry))
+    .join('\n');
 }
 
 function hoverOpp(idx) {
@@ -2277,6 +2306,10 @@ function clickOpp(idx) {
 // for the pitch highlight/chain detail, clickOpp for the expand + selection state — rather
 // than building a second, parallel selection system just for the timeline.
 function clickTimelineMarker(idx) {
+  if (isPlaybackActive()) {
+    seekPlaybackToOpportunity(idx);
+    return;
+  }
   // The pitch/chain-detail panel on the right isn't tab-gated — it's always visible
   // regardless of which left-hand tab is active — so this always updates it, the same
   // "normal" hover behavior a row click gets on the Opportunities tab.
@@ -2695,12 +2728,316 @@ async function saveJpg() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PLAYBACK
+// ─────────────────────────────────────────────────────────────────────────────
+// The parser remains the only source of football events. Playback is deliberately a
+// presentation adapter over its normalized steps: roles map to schematic pitch anchors,
+// while exact coordinates, save direction and off-ball movement are never invented.
+function playbackCueTitle(cue) {
+  if (!cue) return 'No playback available';
+  if (cue.kind === 'opportunity.start') return cue.variant === 'counter-attack' ? 'Counter-attack begins' : 'Opportunity begins';
+  if (cue.kind === 'flow.pass') return `${cue.actor?.name || 'Player'} → ${cue.target?.name || 'teammate'}`;
+  if (cue.kind === 'flow.duel') return `${cue.actor?.name || 'Attacker'} contests the ball`;
+  if (cue.kind === 'flow.dribble') return `${cue.actor?.name || 'Player'} carries the ball`;
+  if (cue.kind === 'flow.recovery') return `${cue.actor?.name || 'Player'} recovers the ball`;
+  if (cue.kind === 'shot.strike') return `${cue.actor?.name || 'Player'} shoots`;
+  if (cue.kind === 'shot.resolve') return ({ goal: 'Goal!', save: 'Saved', fumble: 'Goalkeeper fumbles', woodwork: 'Off the woodwork', miss: 'Shot missed', blocked: 'Shot blocked' })[cue.variant] || 'Shot resolved';
+  if (cue.kind === 'incident.card') return 'Yellow card';
+  if (cue.kind === 'match.break') return cue.variant === 'half-time' ? 'Half-time' : 'Extra-time break';
+  if (cue.kind === 'match.event') return String(cue.variant || 'match event').replaceAll('-', ' ');
+  if (cue.kind === 'opportunity.end') return 'Opportunity complete';
+  return 'Match moment';
+}
+
+function playbackCueDescription(cue) {
+  if (!cue) return 'Scrape or load a match to create playback.';
+  const q = cue.quality?.label ? `${cue.quality.label} ` : '';
+  if (cue.kind === 'opportunity.start') return `${cue.team || 'The attacking team'} starts an opportunity${cue.minute != null ? ` in minute ${cue.minute}` : ''}.`;
+  if (cue.kind === 'flow.pass') return `${q}${cue.passHeight || ''} pass toward ${cue.target?.name || 'a teammate'}${cue.outcome ? ` — ${cue.outcome.toLowerCase()}` : ''}.`.replace(/\s+/g, ' ');
+  if (cue.kind === 'flow.duel') return `${cue.opponent?.name ? `Against ${cue.opponent.name}. ` : ''}${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : 'The contest continues'}.`;
+  if (cue.kind === 'flow.dribble') return `${cue.opponent?.name ? `Challenged by ${cue.opponent.name}. ` : ''}${cue.outcome ? cue.outcome.toLowerCase() : ''}`;
+  if (cue.kind === 'flow.recovery') return cue.variant === 'recovered-and-cleared' ? 'The loose ball is recovered and cleared.' : 'The loose ball remains live and is recovered.';
+  if (cue.kind === 'shot.strike') return `${q}${cue.variant === 'standard' ? '' : `${cue.variant.replaceAll('-', ' ')} `}attempt${cue.goalkeeper?.name ? ` against ${cue.goalkeeper.name}` : ''}.`;
+  if (cue.kind === 'shot.resolve') return `${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : cue.variant}${cue.goalkeeperQuality?.label ? ` — ${cue.goalkeeperQuality.label} goalkeeper effort` : ''}.`;
+  if (cue.kind === 'incident.card') return `${cue.actor?.name || 'A player'} is booked.`;
+  if (cue.kind === 'match.event') {
+    const people = [cue.actor?.name, cue.secondaryActor?.name].filter(Boolean).join(' → ');
+    return [people, cue.value].filter(Boolean).join(' · ') || 'A reported match event.';
+  }
+  if (cue.kind === 'match.break') return 'Playback pauses at the reported match break.';
+  if (cue.kind === 'opportunity.end') return `${cue.outcome ? cue.outcome.toLowerCase().replaceAll('_', ' ') : 'The sequence ends'}.`;
+  return '';
+}
+
+function playbackCueOverlay(cue) {
+  if (!cue?.actor?.position || !cue.attackingSide) return '';
+  const point = pXY(cue.actor.position, cue.attackingSide);
+  return `<circle class="pb-svg-pulse" cx="${point.x}" cy="${point.y}" r="15"/>`;
+}
+
+// Draw the current parsed action as its own bright route before the scheduler advances.
+// Completed actions remain in the quieter cumulative chain underneath, so playback reads
+// as a sequence instead of replacing the entire pitch at every cue. All endpoints are
+// the same role-based schematic anchors used by the existing pitch.
+function playbackStepArrow(cue) {
+  if (!cue?.actor?.position || !cue.attackingSide) return '';
+  const side = cue.attackingSide;
+  const col = side === 'home' ? HC : AC;
+  const from = pXY(cue.actor.position, side);
+  let to = null;
+
+  if (cue.kind === 'flow.pass' && cue.target?.position) {
+    to = pXY(cue.target.position, side);
+  } else if (['flow.duel', 'flow.dribble'].includes(cue.kind) && cue.opponent?.position) {
+    const opponent = pXY(cue.opponent.position, cue.defendingSide || (side === 'home' ? 'away' : 'home'));
+    // A duel is one local action, not a pass across the whole formation. Stop at the
+    // midpoint between the two schematic role anchors to show the direction of pressure.
+    to = { x: (from.x + opponent.x) / 2, y: (from.y + opponent.y) / 2 };
+  } else if (cue.kind === 'shot.strike') {
+    to = { x: MX, y: side === 'home' ? PY.goal : AY.goal };
+  } else if (cue.kind === 'flow.recovery') {
+    const attackDirection = side === 'home' ? -1 : 1;
+    to = from;
+    const recoveryFromY = from.y - 34 * attackDirection;
+    return `<g class="pb-step-route"><line class="pb-step-arrow" pathLength="1" ` +
+      `x1="${from.x}" y1="${recoveryFromY}" x2="${to.x}" y2="${to.y}" ` +
+      `stroke="${col}" stroke-width="4" stroke-linecap="round"/>` +
+      arrowHead(from.x, recoveryFromY, to.x, to.y, col, 1, 1) + `</g>`;
+  }
+
+  if (!to || (Math.abs(to.x - from.x) < 1 && Math.abs(to.y - from.y) < 1)) return '';
+  return `<g class="pb-step-route"><line class="pb-step-arrow" pathLength="1" ` +
+    `x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" ` +
+    `stroke="${col}" stroke-width="4" stroke-linecap="round"/>` +
+    arrowHead(from.x, from.y, to.x, to.y, col, 1, 2) + `</g>`;
+}
+
+function isOpportunitiesTabActive() {
+  return document.querySelector('.tab.active')?.dataset.tab === 'opps';
+}
+
+function isPlaybackActive() {
+  return _playbackState.engaged && isOpportunitiesTabActive();
+}
+
+function pbTextElement(className, text) {
+  const element = document.createElement('div');
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function showPlaybackNarrative(cue) {
+  if (!cue) { _playbackState.narrativeKey = null; showNarrativeLines([]); return; }
+  const key = Number.isInteger(cue.opportunityIndex)
+    ? `opportunity-${cue.opportunityIndex}` : `event-${cue.tacticalEventIndex}`;
+  // Every cue within one opportunity shares the same source narrative. Avoid replacing
+  // the <pre> on every step so a user's scroll position remains stable while arrows play.
+  if (_playbackState.narrativeKey === key) {
+    $('raw-panel').style.display = 'block';
+    return;
+  }
+  const lines = Number.isInteger(cue.opportunityIndex)
+    ? (_match?.opportunities?.[cue.opportunityIndex]?.rawLines || [])
+    : (cue.rawText ? [cue.rawText] : []);
+  _playbackState.narrativeKey = key;
+  showNarrativeLines(lines);
+}
+
+function clearPlaybackListState() {
+  document.querySelectorAll('.playback-current').forEach(el => el.classList.remove('playback-current'));
+  document.querySelectorAll('.step-tr.playback-future').forEach(el => el.classList.remove('playback-future'));
+  document.querySelectorAll('.step-block').forEach(el => el.classList.remove('open'));
+  _playbackState.listKey = null;
+}
+
+function renderPlaybackListCue(cue) {
+  clearPlaybackListState();
+  if (!cue) return;
+  let target = null;
+  if (Number.isInteger(cue.opportunityIndex)) {
+    const row = document.querySelector(`.opp-row[data-idx="${cue.opportunityIndex}"]`);
+    const block = $(`steps-${cue.opportunityIndex}`);
+    row?.classList.add('playback-current');
+    block?.classList.add('open');
+    const visibleThrough = cue.kind === 'opportunity.end' ? Number.POSITIVE_INFINITY
+      : (Number.isInteger(cue.stepIndex) ? cue.stepIndex : -1);
+    block?.querySelectorAll('.step-tr').forEach(stepRow => {
+      const stepIndex = Number(stepRow.dataset.stepIndex);
+      stepRow.classList.toggle('playback-future', stepIndex > visibleThrough);
+      stepRow.classList.toggle('playback-current', stepIndex === cue.stepIndex);
+      if (stepIndex === cue.stepIndex) target = stepRow;
+    });
+    target ||= row;
+  } else if (Number.isInteger(cue.tacticalEventIndex)) {
+    target = document.querySelector(`[data-event-idx="${cue.tacticalEventIndex}"]`);
+    target?.classList.add('playback-current');
+  }
+  const key = Number.isInteger(cue.opportunityIndex)
+    ? `opportunity-${cue.opportunityIndex}-step-${cue.stepIndex ?? 'start'}`
+    : `event-${cue.tacticalEventIndex}`;
+  if (target && _playbackState.listKey !== key) {
+    target.scrollIntoView({ behavior: _playbackState.reducedMotion ? 'auto' : 'smooth', block: 'center' });
+    _playbackState.listKey = key;
+  }
+}
+
+function renderPlaybackCurrentCue(paintPitch = isPlaybackActive()) {
+  const cue = _playbackState.cues[_playbackState.index] || null;
+  const card = $('playback-card');
+  const progress = $('pb-progress');
+  const seek = $('pb-seek');
+  const play = $('pb-play');
+  if (seek) {
+    seek.max = String(Math.max(0, _playbackState.cues.length - 1));
+    seek.value = String(Math.min(_playbackState.index, Math.max(0, _playbackState.cues.length - 1)));
+    seek.disabled = !_playbackState.cues.length;
+  }
+  if (progress) progress.textContent = _playbackState.cues.length ? `${_playbackState.index + 1} / ${_playbackState.cues.length}` : '0 / 0';
+  if (play) {
+    play.textContent = _playbackState.playing ? 'Pause' : 'Play';
+    play.setAttribute('aria-label', _playbackState.playing ? 'Pause match' : 'Play match');
+    play.disabled = !_playbackState.cues.length;
+  }
+  if (card) {
+    card.classList.toggle('away', cue?.attackingSide === 'away' || cue?.teamSide === 'away');
+    if (cue) card.replaceChildren(
+      pbTextElement('playback-kicker', `${cue.minute != null ? `${cue.minute}′ · ` : ''}${cue.kind.replace('.', ' ')}`),
+      pbTextElement('playback-title', playbackCueTitle(cue)),
+      pbTextElement('playback-description', playbackCueDescription(cue)),
+    );
+    else card.replaceChildren(pbTextElement('no-data', 'No parsed moments available for playback.'));
+  }
+  const vignette = $('playback-vignette');
+  if (vignette) {
+    const significant = cue && (cue.kind.startsWith('shot.') || cue.kind === 'incident.card' || cue.kind === 'match.break');
+    if (significant) {
+      const icon = cue.kind === 'incident.card' ? '▮' : cue.kind === 'match.break' ? 'Ⅱ' : cue.kind === 'shot.resolve' && cue.variant === 'goal' ? '⚽' : '●';
+      const vignetteCard = pbTextElement('playback-vignette-card', '');
+      vignetteCard.replaceChildren(
+        pbTextElement('playback-vignette-icon', icon),
+        pbTextElement('playback-vignette-title', playbackCueTitle(cue)),
+        pbTextElement('playback-vignette-detail', playbackCueDescription(cue)),
+      );
+      vignette.replaceChildren(vignetteCard);
+    } else vignette.replaceChildren();
+    vignette.classList.toggle('visible', paintPitch && !!significant);
+  }
+  if (!paintPitch || !cue) return;
+  const partial = playbackPartialOpportunity(_match, cue);
+  const chain = partial?.steps?.length ? renderHighlightChain(partial) : '';
+  setHighlight(chain + playbackStepArrow(cue) + playbackCueOverlay(cue), !!(chain || cue.actor));
+  $('pass-summary').style.display = 'none';
+  showPlaybackNarrative(cue);
+  renderPlaybackListCue(cue);
+  markTimelineSelected(cue.opportunityIndex);
+}
+
+function clearPlaybackTimer() {
+  if (_playbackState.timer !== null) clearTimeout(_playbackState.timer);
+  _playbackState.timer = null;
+}
+
+function pausePlayback() {
+  clearPlaybackTimer();
+  _playbackState.playing = false;
+  renderPlaybackCurrentCue(isPlaybackActive());
+}
+
+function schedulePlaybackAdvance() {
+  clearPlaybackTimer();
+  if (!_playbackState.playing || !_playbackState.cues.length) return;
+  const cue = _playbackState.cues[_playbackState.index];
+  const normalDelay = (cue?.durationMs || 600) / _playbackState.speed;
+  const delay = _playbackState.reducedMotion ? Math.min(150, normalDelay) : normalDelay;
+  _playbackState.timer = setTimeout(() => {
+    if (_playbackState.index >= _playbackState.cues.length - 1) {
+      pausePlayback();
+      renderPlaybackCurrentCue(true);
+      return;
+    }
+    _playbackState.index++;
+    renderPlaybackCurrentCue(true);
+    schedulePlaybackAdvance();
+  }, delay);
+}
+
+function togglePlayback() {
+  if (_playbackState.playing) { pausePlayback(); return; }
+  if (!_playbackState.cues.length) return;
+  _playbackState.engaged = true;
+  if (_playbackState.scope === 'match' && _teamFilter !== 'both') {
+    _teamFilter = 'both';
+    renderOppSummaryAndList();
+    buildBasePitch();
+  }
+  if (_playbackState.index >= _playbackState.cues.length - 1) _playbackState.index = 0;
+  _playbackState.playing = true;
+  renderPlaybackCurrentCue(true);
+  schedulePlaybackAdvance();
+}
+
+function seekPlayback(index) {
+  if (!_playbackState.cues.length) return;
+  _playbackState.engaged = true;
+  _playbackState.index = Math.max(0, Math.min(_playbackState.cues.length - 1, Number(index) || 0));
+  renderPlaybackCurrentCue(true);
+  if (_playbackState.playing) schedulePlaybackAdvance();
+}
+
+function seekPlaybackToOpportunity(opportunityIndex) {
+  const cueIndex = _playbackState.cues.findIndex(c => c.opportunityIndex === opportunityIndex);
+  if (cueIndex >= 0) { seekPlayback(cueIndex); return; }
+  // In selected-opportunity scope, a different timeline marker is an explicit new
+  // selection even though its cues are not in the current narrow queue.
+  if (_playbackState.scope === 'selected' && _match?.opportunities?.[opportunityIndex]) {
+    clearPlaybackTimer();
+    _playbackState.playing = false;
+    _playbackState.cues = buildPlaybackCues(_match, { opportunityIndex });
+    _playbackState.index = 0;
+    renderPlaybackCurrentCue(true);
+  }
+}
+
+function rebuildPlaybackCues() {
+  clearPlaybackTimer();
+  _playbackState.playing = false;
+  const selected = getPinnedIdx();
+  const currentOpportunity = _playbackState.cues[_playbackState.index]?.opportunityIndex;
+  const opportunityIndex = _playbackState.scope === 'selected'
+    ? (selected ?? currentOpportunity ?? 0) : null;
+  _playbackState.cues = _match ? buildPlaybackCues(_match,
+    opportunityIndex === null ? {} : { opportunityIndex }) : [];
+  _playbackState.index = 0;
+  renderPlaybackCurrentCue(isPlaybackActive());
+}
+
+function resetPlaybackForMatch() {
+  _playbackState.narrativeKey = null;
+  _playbackState.listKey = null;
+  _playbackState.engaged = false;
+  _playbackState.reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  _playbackState.scope = $('pb-scope')?.value || 'match';
+  _playbackState.speed = Number($('pb-speed')?.value) || 1;
+  rebuildPlaybackCues();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────────────────────
 function activateTab(name) {
+  const leavingOpportunities = isOpportunitiesTabActive() && name !== 'opps';
+  if (leavingOpportunities && _playbackState.engaged) pausePlayback();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   $(`panel-${name}`)?.classList.add('active');
+  if (name === 'opps' && _playbackState.engaged) renderPlaybackCurrentCue(true);
+  else if (name !== 'opps') {
+    $('playback-vignette')?.classList.remove('visible');
+    const pinnedIdx = getPinnedIdx();
+    if (pinnedIdx !== null && _match) showPitchDetail(_match.opportunities[pinnedIdx], true);
+    else { setHighlight('', false); $('pass-summary').style.display = 'none'; $('raw-panel').style.display = 'none'; }
+  }
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
@@ -2708,12 +3045,14 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 // OPP LIST EVENT DELEGATION  (inline handlers blocked by extension CSP)
 // ─────────────────────────────────────────────────────────────────────────────
 document.addEventListener('mouseover', e => {
+  if (isPlaybackActive()) return;
   const row = e.target.closest('.opp-row');
   if (row?.dataset.idx !== undefined) { hoverOpp(parseInt(row.dataset.idx)); return; }
   const marker = e.target.closest('.tl-marker');
   if (marker?.dataset.idx !== undefined) hoverOpp(parseInt(marker.dataset.idx));
 });
 document.addEventListener('mouseout', e => {
+  if (isPlaybackActive()) return;
   const row = e.target.closest('.opp-row');
   if (row && !row.contains(e.relatedTarget)) { unhoverOpp(); return; }
   const marker = e.target.closest('.tl-marker');
@@ -2721,7 +3060,14 @@ document.addEventListener('mouseout', e => {
 });
 document.addEventListener('click', e => {
   const row = e.target.closest('.opp-row');
-  if (row?.dataset.idx !== undefined) clickOpp(parseInt(row.dataset.idx));
+  if (row?.dataset.idx !== undefined) {
+    if (isPlaybackActive()) {
+      _playbackState.engaged = false;
+      pausePlayback();
+      clearPlaybackListState();
+    }
+    clickOpp(parseInt(row.dataset.idx));
+  }
 
   const marker = e.target.closest('.tl-marker');
   if (marker?.dataset.idx !== undefined) clickTimelineMarker(parseInt(marker.dataset.idx));
@@ -2738,6 +3084,20 @@ document.addEventListener('click', e => {
 // ─────────────────────────────────────────────────────────────────────────────
 // BUTTONS
 // ─────────────────────────────────────────────────────────────────────────────
+$('pb-play').addEventListener('click', togglePlayback);
+$('pb-prev').addEventListener('click', () => seekPlayback(_playbackState.index - 1));
+$('pb-next').addEventListener('click', () => seekPlayback(_playbackState.index + 1));
+$('pb-restart').addEventListener('click', () => seekPlayback(0));
+$('pb-seek').addEventListener('input', e => seekPlayback(Number(e.target.value)));
+$('pb-speed').addEventListener('change', e => {
+  _playbackState.speed = Number(e.target.value) || 1;
+  if (_playbackState.playing) schedulePlaybackAdvance();
+});
+$('pb-scope').addEventListener('change', e => {
+  _playbackState.scope = e.target.value === 'selected' ? 'selected' : 'match';
+  rebuildPlaybackCues();
+});
+
 $('btn-scrape').addEventListener('click', async () => {
   $('status').textContent = 'Scraping…'; $('btn-scrape').disabled = true;
   try {
@@ -2759,6 +3119,7 @@ $('btn-load').addEventListener('click', async () => {
 $('btn-clear').addEventListener('click', async () => {
   await ext.storage.local.remove('lastScrape');
   _match = null;
+  resetPlaybackForMatch();
   _lastRenderedScrape = null;
   $('status').textContent = 'Cleared';
   ['errors','meta-bar','opp-summary','timeline-wrap'].forEach(id => { const e=$( id); if(e){ e.innerHTML=''; e.style.display=''; }});

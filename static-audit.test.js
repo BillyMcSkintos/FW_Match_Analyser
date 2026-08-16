@@ -21,7 +21,7 @@ const path = require('node:path');
 const root = __dirname;
 function read(relative) { return fs.readFileSync(path.join(root, relative), 'utf8'); }
 
-const RUNTIME_FILES = ['parser.js', 'analytics.js', 'viewer.js', 'scraper.js', 'background.js', 'utils.js'];
+const RUNTIME_FILES = ['parser.js', 'analytics.js', 'playback.js', 'viewer.js', 'scraper.js', 'background.js', 'utils.js'];
 
 test('manifest declares exactly the permissions/host_permissions this project actually uses', () => {
   const manifest = JSON.parse(read('manifest.json'));
@@ -46,13 +46,24 @@ test('manifest declares exactly the permissions/host_permissions this project ac
 test('viewer.html only loads local scripts, and never inline event handlers', () => {
   const html = read('viewer.html');
   const scriptSources = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(scriptSources, ['utils.js', 'parser.js', 'analytics.js', 'viewer.js']);
+  assert.deepEqual(scriptSources, ['utils.js', 'parser.js', 'analytics.js', 'playback.js', 'viewer.js']);
   for (const source of scriptSources) {
     assert.equal(/^https?:|^\/\//i.test(source), false, `remote script source: ${source}`);
     assert.equal(fs.existsSync(path.join(root, source)), true, `missing local script: ${source}`);
   }
   assert.equal(/<(?:iframe|object|embed)\b/i.test(html), false);
   assert.equal(/\son\w+\s*=/i.test(html), false, 'inline event handlers are forbidden');
+});
+
+test('playback UI is local, accessible and reduced-motion aware', () => {
+  const html = read('viewer.html');
+  for (const required of ['id="panel-opps"', 'id="playback-controls-panel"', 'id="pb-play"',
+    'id="pb-seek"', 'aria-live="polite"', 'prefers-reduced-motion']) {
+    assert.match(html, new RegExp(required), `missing playback UI contract: ${required}`);
+  }
+  assert.doesNotMatch(html, /data-tab="playback"|id="panel-playback"/,
+    'playback belongs inside Opportunities, not in a separate tab/panel');
+  assert.ok(html.indexOf('id="playback-controls-panel"') > html.indexOf('id="panel-opps"'));
 });
 
 test('no network-exfiltration, dynamic-eval, or unexpected persistent-storage sink exists anywhere in the runtime bundle', () => {
