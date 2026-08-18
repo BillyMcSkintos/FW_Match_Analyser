@@ -838,32 +838,45 @@ let _statusCache = new Map();
 function playerStatusAt(events, playerName, minute) {
   const key = playerName + '|' + minute;
   if (_statusCache.has(key)) return _statusCache.get(key);
-  let injury = null, tiredness = null;
+  let injury = null, tiredness = null, tirednessMinute = null;
   for (const ev of events) {
     if (ev.minute != null && ev.minute > minute) break;
-    if (ev.type === 'HALF_TIME' || ev.type === 'EXTRA_TIME_BREAK') { tiredness = null; continue; }
+    if (ev.type === 'HALF_TIME' || ev.type === 'EXTRA_TIME_BREAK') {
+      tiredness = null; tirednessMinute = null; continue;
+    }
     if (ev.player?.name !== playerName) continue;
     if (ev.type === 'INJURY')    injury    = ev.severity;
-    if (ev.type === 'TIREDNESS') tiredness = ev.level;
+    if (ev.type === 'TIREDNESS') {
+      // Do not restart the clock for a duplicate TIRED report in the same period. A
+      // report after a break is safe because the break cleared both fields above.
+      if (!(ev.level === 'TIRED' && tiredness === 'TIRED')) tirednessMinute = ev.minute;
+      tiredness = ev.level;
+    }
   }
-  const result = { injury, tiredness };
+  const result = { injury, tiredness, tirednessMinute };
   _statusCache.set(key, result);
   return result;
 }
-// Numeric penalties are the manual's stated fixed values (Tiredness: 5%/20% skill
-// penalty at the tired/very-tired thresholds; Light Injury is -1 to all skills and
-// -10% to CO) — the manual doesn't give an exact per-minute accumulation formula for
-// tiredness in between, so this shows the two documented thresholds rather than
-// inventing an interpolated number. UNKNOWN (an injury description the parser doesn't
-// recognize as either "light" or "severe") intentionally shows no numeric penalty —
-// only LIGHT's effect is actually documented, so guessing a number for an unrecognized
-// tier would be less honest than just flagging that the player is injured.
-function statusDetail(injury, tiredness) {
+// The manual defines the tired report as the 5% threshold, followed by another percentage
+// point for every minute of tiredness up to the 20% very-tired cap. This calculation is
+// derived only from an observed report in the current period; breaks clear it above
+// because the extension cannot reconstruct the player's hidden post-rest Constitution.
+function tirednessPenalty(tiredness, reportedMinute, currentMinute) {
+  if (!tiredness) return null;
+  if (tiredness === 'VERY_TIRED') return 20;
+  const elapsed = Number.isFinite(reportedMinute) && Number.isFinite(currentMinute)
+    ? Math.max(0, currentMinute - reportedMinute) : 0;
+  return Math.min(20, 5 + elapsed);
+}
+// Light Injury is -1 to all skills and -10% to CO. UNKNOWN intentionally shows no
+// numeric penalty because the manual gives no value for an unrecognized injury tier.
+function statusDetail(injury, tiredness, tirednessMinute, currentMinute) {
   if (injury === 'SEVERE')        return ' 🚑';
   if (injury === 'LIGHT')         return ' 🩹<span class="p-status-pct">-1/-10%CO</span>';
   if (injury === 'UNKNOWN')       return ' 🩹';
-  if (tiredness === 'VERY_TIRED') return ' 😴<span class="p-status-pct">-20%</span>';
-  if (tiredness === 'TIRED')      return ' 🫩<span class="p-status-pct">-5%</span>';
+  const penalty = tirednessPenalty(tiredness, tirednessMinute, currentMinute);
+  if (tiredness === 'VERY_TIRED') return ` 💤<span class="p-status-pct">-${penalty}%</span>`;
+  if (tiredness === 'TIRED')      return ` 🫩<span class="p-status-pct">-${penalty}%</span>`;
   return '';
 }
 
@@ -872,7 +885,7 @@ function nm(p, minute) {
   let status = '';
   if (minute != null && _statusEvents) {
     const st = playerStatusAt(_statusEvents, p.name, minute);
-    status = statusDetail(st.injury, st.tiredness);
+    status = statusDetail(st.injury, st.tiredness, st.tirednessMinute, minute);
   }
   return `<span class="p-nm">${escapeHtml(p.name.split(' ').pop())}</span> <span class="p-pos">[${escapeHtml(p.position)||'?'}]</span>${status}`;
 }
@@ -1483,6 +1496,24 @@ function renderGroupedStats(stats) {
   return html;
 }
 
+// The selected opportunity on the right is easier to scan when each engine phase reads
+// like a heading rather than another narrative sentence. Keep this display-only: parser
+// phase recognition remains the source of truth for the match model.
+const NARRATIVE_PHASE_LABELS = new Set([
+  'Midfield', 'Penalty Box', 'Goal Attempt', 'Long Shot Goal Attempt',
+  'Corner', 'Free Kick', 'Penalty', 'Counter attack',
+]);
+function renderOpportunityNarrative(lines, registry) {
+  return (lines || []).map(line => {
+    const trimmed = line.trim();
+    if (NARRATIVE_PHASE_LABELS.has(trimmed))
+      return `\n<span class="narrative-step-label">${escapeHtml(trimmed)}</span>`;
+    if (trimmed === 'GOAL!')
+      return '<span class="narrative-goal-label">GOAL!</span>';
+    return colorizeNarrativeLine(line, registry);
+  }).join('\n');
+}
+
 function renderPlayerStatisticsTeam(label, side, players) {
   if (!players.length) return '';
   const count = n => n ? escapeHtml(String(n)) : '<span class="zero">–</span>';
@@ -1622,11 +1653,12 @@ function groupTirednessByPlayer(events) {
   return groups;
 }
 function renderTirednessGroup(g, col) {
-  // Same 😴/🫩 convention statusDetail() already uses for the tired/very-tired badge
+  // Same 💤/🫩 convention statusDetail() already uses for the tired/very-tired badge
   // shown next to a player's name elsewhere in the app.
   const badges = g.entries.map(e => {
-    const icon = e.level === 'VERY_TIRED' ? '😴' : '🫩';
-    return `<span class="tac-impact">${icon}${e.minute != null ? ' ' + e.minute + "'" : ''}</span>`;
+    const icon = e.level === 'VERY_TIRED' ? '💤' : '🫩';
+    const threshold = e.level === 'VERY_TIRED' ? 20 : 5;
+    return `<span class="tac-impact">${icon}${e.minute != null ? ' ' + e.minute + "'" : ''} (-${threshold}%)</span>`;
   }).join(' ');
   return `<div class="tac-row" style="border-left-color:${col}">
     <span class="tac-text"><span class="p-nm" style="color:${col}">${lastName(g.player)}</span> <span class="p-pos">[${escapeHtml(g.player?.position) || '?'}]</span></span>
@@ -2210,9 +2242,7 @@ function showPitchDetail(opp, dim) {
   ps.innerHTML = buildPassSummary(opp);
   if (opp.rawLines?.length) {
     $('raw-panel').style.display = 'block';
-    $('raw-text').innerHTML = opp.rawLines
-      .map(l => colorizeNarrativeLine(l, _match.playerRegistry))
-      .join('\n');
+    $('raw-text').innerHTML = renderOpportunityNarrative(opp.rawLines, _match.playerRegistry);
   }
 }
 
