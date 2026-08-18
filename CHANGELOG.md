@@ -33,6 +33,12 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
   team-attributed match events over weaker action-level stamps, so one player cannot be
   duplicated under both teams.
 
+### Changed
+- Improved the selected-opportunity narrative with separated phase and transition
+  headings, bold white step labels, and a bold yellow goal marker.
+- Replaced the very-tired emoji with 💤 and now displays the manual-defined tiredness
+  penalty increasing from 5% by one percentage point per minute to the 20% cap.
+
 ## [0.5.0] — Firefox compatibility
 
 ### Added

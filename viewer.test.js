@@ -684,6 +684,71 @@ test('the stats panel escapes an </span><svg onload=...> breakout payload in a s
   assert.ok(!html.includes('<svg onload=alert(1)>'), 'raw breakout markup must not reach the stats panel');
 });
 
+test('tiredness penalty increases one point per minute from 5% to the 20% cap', () => {
+  const ctx = loadViewerContext();
+  assert.equal(ctx.tirednessPenalty('TIRED', 30, 30), 5);
+  assert.equal(ctx.tirednessPenalty('TIRED', 30, 35), 10);
+  assert.equal(ctx.tirednessPenalty('TIRED', 30, 45), 20);
+  assert.equal(ctx.tirednessPenalty('TIRED', 30, 80), 20);
+  assert.equal(ctx.tirednessPenalty('VERY_TIRED', 45, 45), 20);
+  assert.equal(ctx.tirednessPenalty(null, null, 45), null);
+  assert.match(ctx.statusDetail(null, 'TIRED', 30, 35), /🫩.*-10%/);
+  assert.match(ctx.statusDetail(null, 'VERY_TIRED', 45, 45), /💤.*-20%/);
+});
+
+test('a rest break clears the tiredness minute used for the calculated penalty', () => {
+  const ctx = loadViewerContext();
+  const status = ctx.playerStatusAt([
+    { minute: 30, type: 'TIREDNESS', player: { name: 'Player A' }, level: 'TIRED' },
+    { minute: 45, type: 'HALF_TIME' },
+  ], 'Player A', 46);
+  assert.equal(status.tiredness, null);
+  assert.equal(status.tirednessMinute, null);
+});
+
+test('tiredness event badges use the very-tired sleep symbol and documented thresholds', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderTirednessGroup({
+    player: { name: 'Player A', position: 'CM' },
+    entries: [
+      { minute: 30, level: 'TIRED' },
+      { minute: 45, level: 'VERY_TIRED' },
+    ],
+  }, '#fff');
+  assert.match(html, /🫩 30' \(-5%\)/);
+  assert.match(html, /💤 45' \(-20%\)/);
+  assert.doesNotMatch(html, /😴/);
+});
+
+test('selected-opportunity narrative separates and emphasizes phase and goal labels', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderOpportunityNarrative([
+    'Opportunity for Home Team.',
+    'Midfield',
+    'Player A [CM] attempted low good pass to Player B [FW]',
+    'Penalty Box',
+    'Goal Attempt',
+    'Long Shot Goal Attempt',
+    'Penalty',
+    'Counter attack',
+    'GOAL!',
+    'Corner',
+    'Free Kick',
+  ], {});
+
+  for (const label of [
+    'Midfield', 'Penalty Box', 'Goal Attempt', 'Long Shot Goal Attempt',
+    'Corner', 'Free Kick', 'Penalty', 'Counter attack',
+  ]) {
+    assert.match(html, new RegExp(`\\n\\n<span class="narrative-step-label">${label}</span>`));
+  }
+  assert.match(html, /<span class="narrative-goal-label">GOAL!<\/span>/);
+
+  const page = fs.readFileSync(path.join(__dirname, 'viewer.html'), 'utf8');
+  assert.match(page, /\.narrative-step-label\{color:#fff;font-weight:700\}/);
+  assert.match(page, /\.narrative-goal-label\{color:#e8c468;font-weight:700\}/);
+});
+
 test('player statistics render separate home and away tables with requested columns', () => {
   const ctx = loadViewerContext();
   const match = {
