@@ -9,7 +9,7 @@ Versions follow `MAJOR.MINOR.PATCH`:
 The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 `manifest.json`'s `version` field is canonical — `package.json` is kept in sync with it.
 
-## [Unreleased]
+## [0.5.1] — Rebound attribution and chain-display fixes
 
 ### Added
 - Home and away player-statistics tables with derived minutes played, saves,
@@ -32,6 +32,18 @@ The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 - Player statistics resolve one canonical home/away side per player, preferring explicit
   team-attributed match events over weaker action-level stamps, so one player cannot be
   duplicated under both teams.
+- A recovered shot rebound (post or blocked, not just a fumble) is now attributed to the
+  attacking side instead of being left unassigned.
+- Attacks ended by an offside flag are now counted in turnover analytics instead of being
+  silently dropped, and the opportunity list gives offside its own marker color instead of
+  falling back to the generic gray.
+- The penalty-box chain and pitch highlight now show the pass/duel pair that actually
+  advanced play, not always the first attempt — a blocked-then-recovered pass or an
+  initial shot that rebounds into a decisive second shot no longer displays the discarded
+  first attempt in its place.
+- Clicking the toolbar icon while multiple viewer tabs are open with no unique
+  most-recently-used one now focuses an existing tab instead of opening a duplicate and
+  clearing the other tabs' shared scrape data.
 
 ### Changed
 - Improved the selected-opportunity narrative with separated phase and transition

@@ -185,9 +185,13 @@ function opportunityFunnel(match) {
 // (typically won by continued attacking pressure, not a defensive turnover). BLOCKED is
 // only a turnover if nothing continues afterward — a same-side recovery is not a change
 // of possession (see parser.test.js: "blocked pass recovered by the attacking team").
+// OFFSIDE genuinely is a turnover — the attack is stopped and possession passes to the
+// defense via an indirect free kick, the same kind of possession change as an
+// interception or a lost tackle, just triggered by the offside law instead of a duel.
 function classifyTurnoverCause(step) {
   if (step.outcome === 'GK_INTERCEPT') return 'GK_INTERCEPTION';
   if (step.outcome === 'BLOCKED') return 'BLOCKED_PASS';
+  if (step.outcome === 'OFFSIDE') return 'OFFSIDE';
   if (step.outcome === 'CLEARED') {
     if (step.stepType === 'DRIB') return 'FAILED_DRIBBLE';
     // Whether a tackle value was actually recorded distinguishes "lost a contested

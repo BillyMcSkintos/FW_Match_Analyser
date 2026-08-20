@@ -371,7 +371,7 @@ function parseNarrative(narrativeText) {
       // one narrative shot phase to one telemetry shot phase instead of overwriting the
       // preceding shooter/GK/outcome.
       if (currentPhase?.shotTaker) {
-        if (currentPhase.outcome === 'FUMBLED' && currentPhase.blockRecovery)
+        if (REBOUND_LIVE_BALL_OUTCOMES.has(currentPhase.outcome) && currentPhase.blockRecovery)
           currentPhase.blockRecoveryRole = 'attacker';
         startPhase('SHOT');
       }
@@ -461,7 +461,7 @@ function parseNarrative(narrativeText) {
     if (/cleared the ball to safety/.test(line)) {
       if ((m = line.match(/^(.+?) \[([A-Z]+)\] cleared/)))
         if (!currentPhase.defender) currentPhase.defender = player(m[1], m[2]);
-      if (currentPhase.outcome === 'FUMBLED' && currentPhase.blockRecovery)
+      if (REBOUND_LIVE_BALL_OUTCOMES.has(currentPhase.outcome) && currentPhase.blockRecovery)
         currentPhase.looseBallResolution = 'CLEARED';
       else if (!TERMINAL_OUTCOMES.has(currentPhase.outcome)) currentPhase.outcome = 'CLEARED';
       continue;
@@ -625,6 +625,17 @@ function parseNarrative(narrativeText) {
 // set, later "cleared the ball to safety" / "took control" aftermath lines describing
 // what happened to the loose ball afterward must not downgrade/overwrite it.
 const TERMINAL_OUTCOMES = new Set(['GOAL','SAVED','FUMBLED','POST','MISSED','BLOCKED','SHOT_BLOCKED','FOUL','CORNER','GK_INTERCEPT','OFFSIDE']);
+
+// Which shot outcomes leave the ball genuinely live for an attacker to recover, as
+// opposed to ending the passage of play outright. GOAL/MISSED are dead (the ball's left
+// play entirely); SAVED is "a controlled save... genuinely ends the attacking sequence"
+// (see the narrative parser's own comment above). FUMBLED (an uncontrolled save), POST
+// (the woodwork, not a stop at all), and SHOT_BLOCKED (deflected but still in play) are
+// the three outcomes after which "X was close and took control of the ball." can
+// legitimately follow — used below to attribute a recovered rebound to the attacking
+// side (blockRecoveryRole) and to record what happened if it's simply cleared away
+// instead of shot again (looseBallResolution), for whichever of the three occurred.
+const REBOUND_LIVE_BALL_OUTCOMES = new Set(['FUMBLED', 'POST', 'SHOT_BLOCKED']);
 
 function player(name, position) { return { name: name.trim(), position }; }
 function parsePlayerToken(str) {

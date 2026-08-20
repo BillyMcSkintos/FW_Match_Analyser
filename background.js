@@ -26,7 +26,14 @@ ext.action.onClicked.addListener(async () => {
   // '*' suffix so an already-open tab is found whether or not it carries the
   // ?autoscrape=1 / ?fresh=1 query string viewer.html gets launched with below.
   const existing = await ext.tabs.query({ url: base + '*' });
-  const reusable = mostRecentlyAccessed(existing);
+  // mostRecentlyAccessed() returns null both when there are no tabs at all AND when
+  // there are multiple tabs with no unique most-recent one (e.g. lastAccessed
+  // unpopulated, which can happen on Firefox — see FIREFOX_COMPATIBILITY.md) — those are
+  // different situations. An ambiguous existing tab should still be focused (arbitrarily
+  // picking one), not treated the same as "no tabs exist" and given a brand-new tab,
+  // which would also clear the shared last-scrape state out from under the tabs that
+  // were already open.
+  const reusable = existing.length ? (mostRecentlyAccessed(existing) || existing[0]) : null;
   if (reusable) {
     await ext.tabs.update(reusable.id, { active: true });
     await ext.windows.update(reusable.windowId, { focused: true });

@@ -326,6 +326,86 @@ test('a recovered counter-attack highlights the successful route and keeps the b
   assert.match(ctx.renderHighlightChain(opp), /data-chain-context="earlier-failed-pass"/);
 });
 
+test('stepsToChain defers building earlierFailedPasses until it is actually read', () => {
+  const ctx = loadViewerContext();
+  const opp = {
+    teamSide: 'home', isCounterAttack: false,
+    steps: [
+      { stepType: 'START_PASS', from: { name: 'A', position: 'RB' }, to: { name: 'B', position: 'CM' }, values: { pass: { value: 60 } } },
+      { stepType: 'MID_DUEL', attacker: { name: 'B', position: 'CM' }, defender: null, outcome: 'POSSESSION', values: {} },
+    ],
+  };
+  const chain = ctx.stepsToChain(opp);
+  const descriptor = Object.getOwnPropertyDescriptor(chain, 'earlierFailedPasses');
+  assert.equal(typeof descriptor.get, 'function',
+    'earlierFailedPasses must be computed lazily via a getter, not built eagerly on every stepsToChain call');
+  assert.ok(Array.isArray(chain.earlierFailedPasses), 'reading the getter must still produce the array');
+});
+
+test('renderOppList reuses its own stepsToChain result instead of making renderMiniChain recompute it', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 10', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got decent assistance, and was in decent position.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (30)", "10' - A - V_ASSISTANCE - (40)",
+    "10' - H - V_RECEPTION - (25)", "10' - A - V_TACKLING - (70)",
+  ].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  let calls = 0;
+  const original = ctx.stepsToChain;
+  ctx.stepsToChain = (...args) => { calls++; return original(...args); };
+  ctx.renderOppList(match);
+  assert.equal(calls, 1, 'stepsToChain must be computed once per opportunity, not once by renderOppList and again by renderMiniChain');
+});
+
+test('a blocked penalty-box pass that is recovered and re-attempted shows the recovered route, not the block', () => {
+  const ctx = loadViewerContext();
+  const opp = {
+    teamSide: 'home', isCounterAttack: false,
+    steps: [
+      { stepType: 'START_PASS', from: { name: 'A', position: 'RB' }, to: { name: 'B', position: 'CM' }, values: { pass: { value: 60 } } },
+      { stepType: 'MID_DUEL', attacker: { name: 'B', position: 'CM' }, defender: null, outcome: 'POSSESSION', values: {} },
+      // First PB attempt: blocked and lost.
+      { stepType: 'PB_PASS', from: { name: 'B', position: 'CM' }, to: { name: 'C', position: 'FW' }, values: { pass: { value: 40 } } },
+      { stepType: 'PB_DUEL', attacker: { name: 'C', position: 'FW' }, defender: { name: 'X', position: 'CB' }, outcome: 'BLOCKED', values: {} },
+      // Recovered and re-attempted from a different position — this is the pair that
+      // actually matters, and used to be discarded in favor of the blocked one above.
+      { stepType: 'PB_PASS', from: { name: 'D', position: 'LW' }, to: { name: 'E', position: 'FW' }, values: { pass: { value: 90 } } },
+      { stepType: 'PB_DUEL', attacker: { name: 'E', position: 'FW' }, defender: { name: 'X', position: 'CB' }, outcome: 'WON', values: {} },
+      { stepType: 'SHOT', shooter: { name: 'E', position: 'FW' }, gk: { name: 'Y', position: 'GK' }, outcome: 'GOAL', values: { shot: { value: 80 }, gkSave: { value: 60 } } },
+    ],
+  };
+  const chain = ctx.stepsToChain(opp);
+  assert.equal(chain.pbP, 'LW', 'the recovered pass, not the blocked first attempt, must be the main PB route');
+  assert.equal(chain.rP, 'FW');
+  assert.equal(chain.pbRes, 'adv');
+});
+
+test('a rebound shot chain shows the final decisive shot, not the discarded first attempt', () => {
+  const ctx = loadViewerContext();
+  const opp = {
+    teamSide: 'home', isCounterAttack: false,
+    steps: [
+      { stepType: 'PB_PASS', from: { name: 'A', position: 'RB' }, to: { name: 'B', position: 'FW' }, values: { pass: { value: 70 } } },
+      { stepType: 'PB_DUEL', attacker: { name: 'B', position: 'FW' }, defender: { name: 'X', position: 'CB' }, outcome: 'WON', values: {} },
+      // First shot bounces off the post — a live-ball outcome, not the sequence's real result.
+      { stepType: 'SHOT', shooter: { name: 'B', position: 'FW' }, gk: { name: 'Y', position: 'GK' }, outcome: 'POST', values: { shot: { value: 50 }, gkSave: { value: 40 } } },
+      // The rebound is recovered by a teammate and put away — this is how the sequence
+      // actually ended, and used to be discarded in favor of the POST attempt above.
+      { stepType: 'SHOT', shooter: { name: 'C', position: 'FW' }, gk: { name: 'Y', position: 'GK' }, outcome: 'GOAL', values: { shot: { value: 85 }, gkSave: { value: 30 } } },
+    ],
+  };
+  const chain = ctx.stepsToChain(opp);
+  assert.equal(chain.shName, 'C', 'the final, decisive shot must win, not the first shot in the sequence');
+  assert.equal(chain.attOut, 'goal');
+  assert.equal(chain.gkRes, 'goal');
+});
+
 test('counter-attack chain detail uses the countering team and includes a recovery pass', () => {
   const ctx = loadViewerContext();
   vm.runInContext("_match = { meta: { homeTeam: 'AC Pasofino', awayTeam: 'Parana Clube' } }", ctx);
@@ -653,6 +733,23 @@ test('renderOppList escapes a script-tag payload in a player name reached via th
   const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
   const html = ctx.renderOppList(match);
   assert.ok(!html.includes('<script>alert(1)</script>'), 'raw <script> must not reach renderOppList output');
+});
+
+test('an offside-ended opportunity gets its own marker color, not the generic gray fallback', () => {
+  const ctx = loadViewerContext();
+  const narrative = [
+    'Minute 25', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [RM] attempted high brilliant pass to Player D [FW]',
+    'Offside trap was attempted by the defense team.',
+    'Player E [CB] got weak assistance, and was ready.',
+    'Assistant referee signaled the offside flag.',
+  ].join('\n');
+  const telemetry = ["25' - H - O_PB_START", "25' - H - V_PASS - (85)"].join('\n');
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.equal(match.opportunities[0].finalOutcome, 'OFFSIDE');
+  const html = ctx.renderOppList(match);
+  assert.ok(!html.includes('color:#8a9ab0'), 'an OFFSIDE opportunity must not fall back to the generic gray used for an unmapped outcome');
+  assert.ok(html.includes('#c8902a'), 'an OFFSIDE opportunity must use the same amber as FOUL, matching OUT_CSS');
 });
 
 test('meta header escapes an "><img onerror=...> payload in a team name', () => {

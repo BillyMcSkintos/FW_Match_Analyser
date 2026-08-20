@@ -284,6 +284,27 @@ test('runScraper uses Promise-based scripting and storage through the Firefox br
   assert.equal(stored.lastScrape.schemaVersion, 1);
 });
 
+test('toolbar click focuses an existing tab (never creates a duplicate) even when multiple viewer tabs are ambiguously ranked', async () => {
+  const ctx = loadBackgroundContext();
+  const ambiguousTabs = [
+    { id: 101, windowId: 1 },
+    { id: 102, windowId: 2 },
+  ];
+  const calls = { update: [], windowsUpdate: [], create: [] };
+  ctx._api.tabs.query = async () => ambiguousTabs;
+  ctx._api.tabs.update = async (id, info) => { calls.update.push([id, info]); };
+  ctx._api.tabs.create = async (info) => { calls.create.push(info); };
+  ctx._api.windows.update = async (id, info) => { calls.windowsUpdate.push([id, info]); };
+
+  await ctx._actionListener();
+
+  assert.equal(calls.create.length, 0, 'an ambiguous existing tab must not spawn a duplicate new tab');
+  assert.equal(calls.update.length, 1);
+  assert.ok(ambiguousTabs.some(t => t.id === calls.update[0][0]), 'must focus one of the existing ambiguous tabs');
+  assert.equal(calls.update[0][1].active, true);
+  assert.equal(calls.windowsUpdate.length, 1);
+});
+
 test('mostRecentlyAccessed falls back safely when lastAccessed is unavailable', () => {
   const ctx = loadBackgroundContext();
   assert.equal(ctx.mostRecentlyAccessed([{ id: 1 }, { id: 2 }]), null, 'unordered tabs must not be chosen arbitrarily');

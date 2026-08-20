@@ -218,6 +218,23 @@ test('a GK interception is classified GK_INTERCEPTION', () => {
   assert.equal(turnovers[0].playerWinning.name, 'Player G');
 });
 
+test('an attack ended by an offside flag is classified as a turnover, not silently dropped', () => {
+  const narrative = [
+    'Minute 25', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [RM] attempted high brilliant pass to Player D [FW]',
+    'Offside trap was attempted by the defense team.',
+    'Player E [CB] got weak assistance, and was ready.',
+    'Assistant referee signaled the offside flag.',
+  ].join('\n');
+  const telemetry = ["25' - H - O_PB_START", "25' - H - V_PASS - (85)"].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const turnovers = A.turnoverAnalysis(match);
+  assert.equal(turnovers.length, 1);
+  assert.equal(turnovers[0].cause, 'OFFSIDE');
+  assert.equal(turnovers[0].losingSide, 'home');
+  assert.equal(turnovers[0].winningSide, 'away');
+});
+
 test('a blocked pass recovered by the attacking team is NOT a turnover', () => {
   const narrative = [
     'Minute 60', 'Opportunity for Home Team.', 'Midfield',

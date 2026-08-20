@@ -243,6 +243,27 @@ function nudgedXY(pos, side, neighbours) {
 // ─────────────────────────────────────────────────────────────────────────────
 // STEPS → CHAIN SUMMARY  (adapter from new model to pitch/minichain)
 // ─────────────────────────────────────────────────────────────────────────────
+// Pairs a pass-type step with the duel-type step that follows it (stopping at the next
+// pass of the same type), then returns the LAST pair whose duel actually advanced
+// (POSSESSION/WON), falling back to the last pair overall if none did. A blocked pass —
+// of either kind, midfield or penalty-box — can be recovered and re-attempted within the
+// same opportunity; using the first pair made the pitch stop at the block even when the
+// recovered route later produced a goal. Shared by both START_PASS/MID_DUEL and
+// PB_PASS/PB_DUEL below, since the same recovery pattern applies to both stages.
+function primaryPair(pool, passType, duelType) {
+  const pairs = [];
+  for (let i = 0; i < pool.length; i++) {
+    if (pool[i].stepType !== passType) continue;
+    let duel = null;
+    for (let j = i + 1; j < pool.length && pool[j].stepType !== passType; j++) {
+      if (pool[j].stepType === duelType) { duel = pool[j]; break; }
+    }
+    pairs.push({ pass: pool[i], duel });
+  }
+  const advanced = [...pairs].reverse().find(pair => ['POSSESSION', 'WON'].includes(pair.duel?.outcome));
+  return { pairs, primary: advanced || pairs[pairs.length - 1] || null };
+}
+
 function stepsToChain(opp) {
   const steps = opp.steps || [];
   const isCA  = !!opp.isCounterAttack;
@@ -251,30 +272,23 @@ function stepsToChain(opp) {
   // failed move win by array order, which is what happened before this fix.
   const pool  = isCA ? steps.filter(s => s.isCA) : steps;
   const find  = type => pool.find(s => s.stepType === type);
+  // A second (rebound) SHOT phase is only ever created in direct response to the
+  // preceding shot's outcome being a live ball (see parser.js's Goal Attempt handler) —
+  // so unlike passes/duels there's no "which one advanced" ambiguity to resolve, the
+  // steps are already in true chronological order and the LAST one is definitionally
+  // how the sequence actually ended (a goal, a save, or whatever the last live attempt
+  // resolved to). Picking the first one showed a discarded earlier attempt instead.
+  const findLast = type => { const m = pool.filter(s => s.stepType === type); return m[m.length - 1] || null; };
 
-  // A blocked pass can create another START_PASS/MID_DUEL pair inside the same
-  // opportunity (the loose ball is recovered and play continues). Using the first pair
-  // made the pitch stop at the block even when the recovered route later produced a
-  // goal. Pair each start pass with its following duel, then use the last pair that
-  // actually advanced as the main route. Earlier failed attempts remain available as
-  // subdued context on the pitch.
-  const midPairs = [];
-  for (let i = 0; i < pool.length; i++) {
-    if (pool[i].stepType !== 'START_PASS') continue;
-    let duel = null;
-    for (let j = i + 1; j < pool.length && pool[j].stepType !== 'START_PASS'; j++) {
-      if (pool[j].stepType === 'MID_DUEL') { duel = pool[j]; break; }
-    }
-    midPairs.push({ pass: pool[i], duel });
-  }
-  const advancedPair = [...midPairs].reverse().find(pair =>
-    ['POSSESSION', 'WON'].includes(pair.duel?.outcome));
-  const primaryMidPair = advancedPair || midPairs[midPairs.length - 1] || null;
+  // Earlier failed attempts remain available as subdued context on the pitch (see
+  // earlierFailedPasses below) — currently only for the midfield stage.
+  const { pairs: midPairs, primary: primaryMidPair } = primaryPair(pool, 'START_PASS', 'MID_DUEL');
+  const { primary: primaryPbPair } = primaryPair(pool, 'PB_PASS', 'PB_DUEL');
   const startPass = primaryMidPair?.pass || find('START_PASS');
   const midDuel   = primaryMidPair?.duel || find('MID_DUEL');
-  const pbPass    = find('PB_PASS');
-  const pbDuel    = find('PB_DUEL');
-  const shot      = find('SHOT');
+  const pbPass    = primaryPbPair?.pass || find('PB_PASS');
+  const pbDuel    = primaryPbPair?.duel || find('PB_DUEL');
+  const shot      = findLast('SHOT');
   const fkShot    = find('FK_SHOT');
   const sp        = find('SP_PASS');
 
@@ -303,7 +317,7 @@ function stepsToChain(opp) {
   // pitch chain needs to draw this as mid-duel → goal, not gate it behind pbRes==='adv'.
   const directShot = !pbReached && !!effectiveShot;
 
-  return {
+  const result = {
     sP:       startPass?.from?.position   || null,
     sName:    startPass?.from?.name       || null,
     mP:       startPass?.to?.position     || effectiveMid?.attacker?.position || null,
@@ -337,15 +351,26 @@ function stepsToChain(opp) {
     isPenalty: effectiveShot?.isPenalty || false,
     directShot,
     isLongBallSequence,
-    earlierFailedPasses: midPairs
-      .filter(pair => pair !== primaryMidPair && !['POSSESSION', 'WON'].includes(pair.duel?.outcome))
-      .map(pair => ({
-        from: pair.pass?.from?.position || null,
-        to: pair.pass?.to?.position || pair.duel?.attacker?.position || null,
-        defender: pair.duel?.defender?.position || null,
-        outcome: pair.duel?.outcome || 'BLOCKED',
-      })),
   };
+
+  // Only renderHighlightChain reads earlierFailedPasses (renderMiniChain/renderOppList/
+  // buildPassSummary never touch it) — computed lazily via a getter so the other call
+  // sites don't pay for the filter/map on every render.
+  Object.defineProperty(result, 'earlierFailedPasses', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return midPairs
+        .filter(pair => pair !== primaryMidPair && !['POSSESSION', 'WON'].includes(pair.duel?.outcome))
+        .map(pair => ({
+          from: pair.pass?.from?.position || null,
+          to: pair.pass?.to?.position || pair.duel?.attacker?.position || null,
+          defender: pair.duel?.defender?.position || null,
+          outcome: pair.duel?.outcome || 'BLOCKED',
+        }));
+    },
+  });
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,8 +704,7 @@ function renderHighlightChain(opp) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MINI CHAIN  — small inline SVG showing chain status
 // ─────────────────────────────────────────────────────────────────────────────
-function renderMiniChain(opp) {
-  const c   = stepsToChain(opp);
+function renderMiniChain(opp, c = stepsToChain(opp)) {
   const chainSide = c.isCA ? (opp.teamSide === 'home' ? 'away' : 'home') : opp.teamSide;
   const col = chainSide === 'home' ? HC : AC;
   const D=4, W=78, H=14;
@@ -1170,6 +1194,9 @@ const OUT_COL = {
   GOAL: GOLD, POST:'#d4954a', SAVED:'#999', FUMBLED:'#e0895a', MISSED:'#d4954a',
   GK_INTERCEPT:'#d4a850', BLOCKED:'#8a6acd', SHOT_BLOCKED:'#8a6acd', CORNER:'#4a8acd',
   FOUL:'#c8902a', CLEARED:'#8a9ab0', POSSESSION:'#8a9ab0', WON:'#8a9ab0',
+  // Same amber as FOUL — OUT_CSS maps both to the ob-foul class, so the two must render
+  // with the same color here too instead of OFFSIDE falling back to the generic gray.
+  OFFSIDE:'#c8902a',
 };
 
 function renderOppList(match) {
@@ -1198,7 +1225,7 @@ function renderOppList(match) {
     html += `<div class="opp-row ${isHome?'home':'away'}${isGoal?' goal-row':''}"
                  data-idx="${idx}">
       <span class="opp-min" style="color:${isGoal?GOLD:col}">${opp.minute}'</span>
-      ${renderMiniChain(opp)}
+      ${renderMiniChain(opp, c)}
       <span class="opp-start ${startCls}">${startLbl}</span>
       <span style="font-size:12px;font-weight:600;color:${outCol};min-width:64px">${outLbl}</span>
       <span class="opp-score${isGoal?' changed':''}">${opp.scoreAfter.home}–${opp.scoreAfter.away}</span>

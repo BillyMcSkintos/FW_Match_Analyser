@@ -2053,6 +2053,46 @@ test('a woodwork rebound opens a new stream phase when the next shot has no inte
     ['Hernán Cuadrado', 45, 'POST'],
     ['Sigfrid Andreasson', 65, 'SAVED'],
   ]);
+  // Sigfrid Andreasson recovers a POST rebound ("was close and took control of the
+  // ball.") and shoots again — he must be registered on his own (away) team, not the
+  // defending team the fumble-only version of this check used to fall back to.
+  assert.equal(match.playerRegistry['Sigfrid Andreasson'].team, 'Lyse Fotbollsklubb');
+  assert.equal(match.playerRegistry['Sigfrid Andreasson'].side, 'away');
+});
+
+test('a shot-blocked rebound recovered by the attacker is also registered on the attacking side, not just a fumble', () => {
+  // Same shape as the woodwork-rebound test above, but the intervening outcome is
+  // SHOT_BLOCKED instead of FUMBLED or POST — the third live-ball outcome a rebound can
+  // follow (see REBOUND_LIVE_BALL_OUTCOMES in parser.js).
+  const narrative = [
+    'Minute 30', 'Opportunity for Away Team.', 'Penalty Box',
+    'Player A [FW] attempted low good pass to Player B [FW]',
+    'Player C [CB] got decent assistance, and was in decent position.',
+    'Player B [FW] made good reception and took control of the ball.',
+    'Goal Attempt',
+    'Player B [FW] made good shot.',
+    'The shot was blocked by the opponent player!',
+    'The ball is now free!',
+    'Player D [FW] was close and took control of the ball.',
+    'Goal Attempt',
+    'Player D [FW] made superb shot.',
+    'Player E [GK] was in decent spot, and made good effort to prevent goal.',
+    'Player E [GK] managed to get hold of the ball.',
+    '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "30' - A - O_PB_START", "30' - A - V_PASS - (55)", "30' - H - V_ASSISTANCE - (40)",
+    "30' - A - V_SHOT - (45)", "30' - H - V_TACKLING - (55)",
+    "30' - A - V_SHOT - (70)", "30' - H - V_REFLEX - (60)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const shots = match.opportunities[0].steps.filter(s => s.stepType === 'SHOT');
+  assert.deepEqual(shots.map(s => [s.shooter.name, s.outcome]), [
+    ['Player B', 'SHOT_BLOCKED'],
+    ['Player D', 'SAVED'],
+  ]);
+  assert.equal(match.playerRegistry['Player D'].team, 'Away Team', 'recovering attacker must be registered on the attacking team, not the defense');
+  assert.equal(match.playerRegistry['Player D'].side, 'away');
 });
 
 test('goalkeeper pressure wording is neutral metadata on a normal saved shot', () => {
