@@ -9,6 +9,39 @@ Versions follow `MAJOR.MINOR.PATCH`:
 The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 `manifest.json`'s `version` field is canonical — `package.json` is kept in sync with it.
 
+## [0.6.3] — Scouting Assessment: minimal reintroduction with 5 targeted fixes
+
+Re-adds a small "### Scouting Assessment" section per team (Strengths/Weaknesses/Key
+matchup findings/Potential vulnerabilities/Threats/Tactical implications), deliberately
+scoped down to just the deterministic synthesis logic plus five concrete bugs found by
+reviewing real generated reports — not the larger refinement (lane synthesis, outstanding-
+defender detection, effect-size confidence, fatigue-timing overhaul) that was judged too
+much engineering for what it added and was dropped.
+
+### Fixed
+- **Key matchup findings duplicated across both teams.** Was scoped to
+  `attackerSide === side || defenderSide === side`, so the exact same finding (one
+  team's attacker beating the other's defender) appeared verbatim under BOTH teams'
+  assessments. Now scoped to `attackerSide === side` only — a finding appears once,
+  under the attacking team; the defending team's own view of the same pair already
+  surfaces separately via `assessVulnerabilities`.
+- **"Dominant PB target" mislabeling.** A high-usage target with a poor win rate (e.g.
+  1/6, with a single goal) was labeled "Dominant" purely because `goals > 0`. Now
+  requires real usage AND performance (win rate ≥60% or ≥2 goals).
+- **Backwards threat/vulnerability wording for efficient shooting.** "Highly efficient
+  shooting… may be exploitable via limiting shot volume rather than assuming poor
+  finishing" read as if a team's own clinical finishing were a weakness. Reworded to
+  "Clinical finishing in this match — G/A shots were goals. Limiting shot volume may
+  therefore be important."
+- **Fatigue-vulnerability label mismatch.** "N starter(s) reached TIRED/VERY_TIRED
+  before full time" only ever counted players who reached the more severe VERY_TIRED
+  tier, not anyone who got just TIRED — the label overclaimed what was counted. Now
+  reads "reached VERY_TIRED before full time."
+- Goalkeeper shot-total reconciliation (already fixed in 0.6.1/0.6.2, unaffected by this
+  round — noted here since it was reported as still visibly broken in a live-generated
+  report; the fix just hadn't been reloaded into the running extension build yet).
+
+
 ## [0.6.2] — Duel-detail split view and narrative positioning capture
 
 ### Added

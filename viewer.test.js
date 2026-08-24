@@ -409,6 +409,62 @@ test('buildScoutingReport: tied leaders are reported jointly instead of an arbit
   assert.doesNotMatch(homeSection, /Main shot taker: Zubac \(1\)/, 'must not silently crown one of the tied players as THE leader');
 });
 
+test('Scouting Assessment: Key matchup findings only appear under the ATTACKING team, never copy-pasted into the defending team\'s own section too', () => {
+  const ctx = loadViewerContext();
+  const attacker = { name: 'Dragic', position: 'FW' }, defender = { name: 'Gesevic', position: 'CB' };
+  const pbDuel = (outcome) => ({ stepType: 'PB_DUEL', attacker, defender, outcome, attackingSide: 'home', defendingSide: 'away', values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: { value: 50 } } });
+  const opportunities = [
+    ...Array(4).fill(0).map(() => ({ teamSide: 'home', steps: [pbDuel('WON')] })),
+    { teamSide: 'home', steps: [pbDuel('CLEARED')] },
+  ];
+  const match = { meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } }, tacticalEvents: [], opportunities };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+  const awaySection = report.slice(report.indexOf('## Away Team'), report.indexOf('## Key Matchups'));
+  assert.match(homeSection, /Dragic repeatedly beat Gesevic/, "the attacking team's own section must show this finding");
+  const awayKeyMatchups = awaySection.slice(awaySection.indexOf('#### Key matchup findings'), awaySection.indexOf('#### Potential vulnerabilities'));
+  assert.doesNotMatch(awayKeyMatchups, /Dragic repeatedly beat Gesevic/, "the defending team's Key matchup findings must NOT duplicate the attacking team's own finding");
+});
+
+test('Scouting Assessment: a high-usage but low-win-rate PB target is never mislabeled "Dominant" just because it produced a goal', () => {
+  const ctx = loadViewerContext();
+  const attacker = { name: 'Lofsgaard', position: 'FW' }, defender = { name: 'Kova', position: 'CB' };
+  const pbDuel = (outcome) => ({ stepType: 'PB_DUEL', attacker, defender, outcome, attackingSide: 'home', defendingSide: 'away', values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: { value: 50 } } });
+  const shot = (outcome) => ({ stepType: 'SHOT', shooter: attacker, outcome, attackingSide: 'home', defendingSide: 'away', values: {} });
+  // 1/6 PB contests won, with a single goal scored off that one win — the exact
+  // Løfsgaard-shaped case that previously got mislabeled "Dominant PB target".
+  const opportunities = [
+    ...Array(5).fill(0).map(() => ({ teamSide: 'home', steps: [pbDuel('CLEARED')] })),
+    { teamSide: 'home', steps: [pbDuel('WON'), shot('GOAL')] },
+  ];
+  const match = { meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 1, away: 0 } }, tacticalEvents: [], opportunities };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.doesNotMatch(report, /Dominant PB target: Lofsgaard/, 'a 1/6 win rate must never be called "Dominant" purely because it produced one goal');
+});
+
+test('Scouting Assessment: efficient shooting is worded as a threat/strength, never as something exploitable against the team that did it', () => {
+  const ctx = loadViewerContext();
+  const fw = { name: 'Sharp', position: 'FW' };
+  const shot = (outcome) => ({ stepType: 'SHOT', shooter: fw, outcome, attackingSide: 'home', defendingSide: 'away', values: {} });
+  const opportunities = [
+    { teamSide: 'home', steps: [shot('GOAL')] }, { teamSide: 'home', steps: [shot('GOAL')] },
+    { teamSide: 'home', steps: [shot('SAVED')] }, { teamSide: 'home', steps: [shot('MISSED')] },
+  ];
+  const match = { meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } }, tacticalEvents: [], opportunities };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.match(report, /Clinical finishing in this match — 2\/4 shots were goals/);
+  assert.doesNotMatch(report, /may be exploitable via limiting shot volume/i, 'high conversion must never be worded as if it were a weakness to exploit');
+});
+
+test('Scouting Assessment: the physical-vulnerability count is labeled to match what it actually counts (VERY_TIRED only)', () => {
+  const ctx = loadViewerContext();
+  const players = ['A', 'B', 'C'].map(n => ({ name: n, position: 'CM' }));
+  const tacticalEvents = players.map((p, i) => ({ type: 'TIREDNESS', minute: 70 + i, sequence: 70 + i, team: 'Home Team', teamSide: 'home', player: p, level: 'VERY_TIRED' }));
+  const match = { meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } }, tacticalEvents, opportunities: [] };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  assert.match(report, /3 starter\(s\) reached VERY_TIRED before full time/);
+  assert.doesNotMatch(report, /reached TIRED\/VERY_TIRED/, 'the label must not claim to count plain-TIRED players when only VERY_TIRED is actually counted');
+});
 test('goalkeeper aggregation reconciles even for the currently-unreachable CORNER shot outcome (defensive correctness, not just the reachable paths)', () => {
   const ctx = loadViewerContext();
   const gk = { name: 'Keeper', position: 'GK' };

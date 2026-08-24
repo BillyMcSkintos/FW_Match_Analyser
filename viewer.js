@@ -2434,6 +2434,257 @@ function buildScoutingSignals(pre, teamNames) {
   return kept.length ? kept.map(c => c.text) : ['No threshold-crossing pattern observed in this single match.'];
 }
 
+// ── Scouting Assessment ──────────────────────────────────────────────────────────────
+// A synthesis layer over the SAME `pre` analytics bundle every other report section
+// reads — no new independent data walk. Deterministic, rule-based: the same match data
+// always produces the same findings, never an LLM asked to "interpret" the match.
+//
+// Confidence is a function of in-match SAMPLE SIZE only (an editorial threshold this
+// project defines): HIGH needs a repeated, substantial pattern; MEDIUM a real but
+// limited sample; LOW a single or near-single occurrence. Never a claim of a persistent
+// tendency — see SINGLE_MATCH_EVIDENCE_NOTE.
+function evidenceConfidence(n) {
+  if (n >= 6) return 'HIGH';
+  if (n >= 3) return 'MEDIUM';
+  return 'LOW';
+}
+const SINGLE_MATCH_EVIDENCE_NOTE = 'Single-match evidence — treat findings as observations, not established tendencies.';
+const SCOUTING_ASSESSMENT_CATEGORY_MAX = 4;
+
+function finding(text, n, players = []) {
+  return { text, confidence: evidenceConfidence(n), n, players };
+}
+function fmtFinding(f) { return `[${f.confidence}] ${f.text}`; }
+// Keep the first (best) finding naming a given player, drop a later one naming the same
+// player as redundant.
+function capAndDedup(items) {
+  const kept = [];
+  const covered = new Set();
+  for (const it of items) {
+    if (kept.length >= SCOUTING_ASSESSMENT_CATEGORY_MAX) break;
+    if (it.players.some(p => covered.has(p))) continue;
+    kept.push(it);
+    it.players.forEach(p => covered.add(p));
+  }
+  return kept;
+}
+
+function assessStrengths(pre, side, team) {
+  const out = [];
+  const f = pre.funnel[side];
+  if (f.total >= 5 && f.reachedPenaltyBox / f.total >= 0.6) {
+    let text = `Effective progression into the penalty box — ${f.reachedPenaltyBox}/${f.total} opportunities reached the PB`;
+    if (f.reachedMidfield >= 3 && f.wonMidfield / f.reachedMidfield >= 0.6)
+      text += `, and the team won ${f.wonMidfield}/${f.reachedMidfield} midfield contests`;
+    out.push(finding(text + '.', f.reachedPenaltyBox));
+  }
+
+  const l = pre.laneData[side];
+  const pbTotal = (l.left.pbEntries || 0) + (l.center.pbEntries || 0) + (l.right.pbEntries || 0);
+  if (pbTotal >= 5) {
+    for (const laneName of ['left', 'center', 'right']) {
+      const n = l[laneName].pbEntries || 0;
+      if (n / pbTotal < 0.6) continue;
+      const starter = Object.values(pre.involvement.starts).filter(p => p.side === side).sort((a, b) => b.count - a.count)[0];
+      const supplier = Object.values(pre.involvement.pbSuppliers).filter(p => p.side === side).sort((a, b) => b.count - a.count)[0];
+      let text = `${laneName[0].toUpperCase() + laneName.slice(1)}-side progression was productive — ${n}/${pbTotal} PB deliveries originated from the ${laneName}`;
+      const players = [];
+      if (starter) { text += `; ${starter.name} was the main opportunity starter`; players.push(starter.name); }
+      if (supplier && supplier.name !== starter?.name) { text += ` and ${supplier.name} the main PB supplier`; players.push(supplier.name); }
+      out.push(finding(text + '.', n, players));
+    }
+  }
+
+  for (const t of pre.pbTargets.filter(p => p.side === side && p.pbContests >= 3)) {
+    if (t.won / t.pbContests >= 0.75)
+      out.push(finding(`${t.player} converted PB contests efficiently: ${t.won}/${t.pbContests} won, producing ${t.shots} shot(s) and ${t.goals} goal(s).`, t.pbContests, [t.player]));
+  }
+
+  const topRoute = pre.routes.filter(r => r.side === side)[0];
+  if (topRoute && topRoute.occurrences >= 3 && topRoute.shots >= 1)
+    out.push(finding(`A recurring route (${topRoute.chain.map(n => n.name).join(' -> ')}) was used ${topRoute.occurrences} times, producing ${topRoute.shots} shot(s) and ${topRoute.goals} goal(s).`, topRoute.occurrences,
+      topRoute.chain.map(n => n.name)));
+
+  return capAndDedup(out);
+}
+
+function assessWeaknesses(pre, side, team) {
+  const out = [];
+  const f = pre.funnel[side];
+  if (f.reachedPenaltyBox >= 3 && f.shots / f.reachedPenaltyBox < 0.5) {
+    const pbLoss = pre.termination[side]?.PB_LOSS || 0;
+    let text = `Progression did not translate efficiently into shots — only ${f.shots}/${f.reachedPenaltyBox} PB-reaching opportunities produced a shot`;
+    if (pbLoss > 0) text += `; ${pbLoss} attack(s) ended in PB duel losses`;
+    out.push(finding(text + '.', f.reachedPenaltyBox));
+  }
+
+  const weakTargets = pre.pbTargets.filter(p => p.side === side && p.pbContests >= 3 && p.won / p.pbContests <= 0.34);
+  if (weakTargets.length) {
+    const text = 'Forward PB contests were a failure point — ' + weakTargets.map(t => `${t.player} won ${t.won}/${t.pbContests}`).join(' and ') + '.';
+    out.push(finding(text, Math.max(...weakTargets.map(t => t.pbContests)), weakTargets.map(t => t.player)));
+  }
+
+  // OTHER_UNKNOWN is classifyAttackTermination's own catch-all for an outcome it could
+  // not categorize — a data-quality gap, not an interpretable scouting fact — so it is
+  // excluded here.
+  const termEntries = Object.entries(pre.termination[side] || {})
+    .filter(([cat]) => cat !== 'OTHER_UNKNOWN').sort((a, b) => b[1] - a[1]);
+  if (termEntries.length) {
+    const [topCat, topCount] = termEntries[0];
+    if (topCat !== 'GOAL' && topCount >= 3 && f.total && topCount / f.total >= 0.4)
+      out.push(finding(`${topCount}/${f.total} attacking sequences ended in ${(TERMINATION_LABELS[topCat] || topCat).toLowerCase()}.`, topCount));
+  }
+
+  return capAndDedup(out);
+}
+
+// Key matchup findings deliberately keep a dominant result and its CONTRAST together —
+// the same attacker's result against a DIFFERENT defender — so a bad matchup against one
+// defender never reads as "the whole defence is weak". Scoped to THIS side's own
+// ATTACKER performance only (m.attackerSide === side) — never the defender side too. An
+// attacking success for one team must never be dumped unchanged into the OTHER team's
+// Key matchup findings just because they share a matchup pair; the defending side's own
+// view of the same pair belongs in assessVulnerabilities instead.
+function assessKeyMatchups(pre, side, team) {
+  const relevant = pre.matchups.filter(m => m.attackerSide === side && m.contests >= 3);
+  const byAttacker = new Map();
+  for (const m of relevant) {
+    if (!byAttacker.has(m.attacker)) byAttacker.set(m.attacker, []);
+    byAttacker.get(m.attacker).push(m);
+  }
+  const out = [];
+  for (const [attacker, ms] of byAttacker) {
+    ms.sort((a, b) => b.attackerWinRate - a.attackerWinRate);
+    const dominant = ms.find(m => m.attackerWinRate >= 0.66);
+    const weak = ms.find(m => m.attackerWinRate <= 0.34);
+    if (dominant) {
+      out.push(finding(`${dominant.attacker} repeatedly beat ${dominant.defender}: ${dominant.attackerWins}/${dominant.contests} PB/duel contests won, producing ${dominant.shotsAfterAttackerWin} shot(s) and ${dominant.goalsAfterAttackerWin} goal(s).`,
+        dominant.contests, [dominant.attacker, dominant.defender]));
+      if (weak && weak.defender !== dominant.defender)
+        out.push(finding(`The same attacker (${attacker}) had far less success against ${weak.defender}: ${weak.attackerWins}/${weak.contests} contests won, ${weak.shotsAfterAttackerWin} shot(s), ${weak.goalsAfterAttackerWin} goal(s) — a bad matchup against one defender does not mean the whole defence struggled.`,
+          weak.contests, [weak.defender]));
+    } else if (weak) {
+      out.push(finding(`${weak.attacker} struggled against ${weak.defender}: only ${weak.attackerWins}/${weak.contests} contests won.`, weak.contests, [weak.attacker, weak.defender]));
+    }
+  }
+  return capAndDedup(out);
+}
+
+function assessVulnerabilities(pre, side, team) {
+  const out = [];
+  for (const d of pre.pbDefenders.filter(p => p.side === side && p.contests >= 3 && p.lost / p.contests >= 0.5)) {
+    out.push(finding(`Potential PB matchup vulnerability around ${d.player} in this match. Lost ${d.lost}/${d.contests} PB contests and was involved in ${d.shotsAllowedAfterLoss} shot(s), ${d.goalsAllowedAfterLoss} goal(s) conceded.`,
+      d.contests, [d.player]));
+  }
+  // firstVeryTiredMinute specifically — only the more severe VERY_TIRED tier is counted
+  // here, so the wording says "reached VERY_TIRED", not "TIRED/VERY_TIRED" (which would
+  // overclaim what this count actually reflects; plain-TIRED players are already shown
+  // in the fatigue timeline above and are not folded into this number).
+  const veryTiredCount = pre.fatigue.filter(p => p.side === side && p.firstVeryTiredMinute != null).length;
+  if (veryTiredCount >= 3)
+    out.push(finding(`Potential late-match physical vulnerability in this match: ${veryTiredCount} starter(s) reached VERY_TIRED before full time.`, veryTiredCount));
+  return capAndDedup(out);
+}
+
+function assessThreats(pre, side, team) {
+  const out = [];
+  // "Dominant" requires usage AND performance — a high-volume target who is mostly
+  // LOSING their PB contests is not "dominant" just because one of those contests
+  // produced a goal (won/pbContests must clear a real majority, or 2+ goals actually
+  // materialized from the volume).
+  const topTargets = pre.pbTargets.filter(p => p.side === side && p.pbContests >= 3).sort((a, b) => b.goals - a.goals || b.won - a.won);
+  if (topTargets.length && (topTargets[0].goals >= 2 || topTargets[0].won / topTargets[0].pbContests >= 0.6))
+    out.push(finding(`Dominant PB target: ${topTargets[0].player} won ${topTargets[0].won}/${topTargets[0].pbContests} PB contests, generating ${topTargets[0].shots} shot(s) and ${topTargets[0].goals} goal(s) — worth testing whether this can be repeated.`,
+      topTargets[0].pbContests, [topTargets[0].player]));
+
+  const threatRoute = pre.routes.filter(r => r.side === side)[0];
+  if (threatRoute && threatRoute.occurrences >= 3 && threatRoute.shots >= 1)
+    out.push(finding(`Productive route: ${threatRoute.chain.map(n => n.name).join(' -> ')} was used ${threatRoute.occurrences} times, producing ${threatRoute.shots} shot(s) and ${threatRoute.goals} goal(s) — worth accounting for.`,
+      threatRoute.occurrences, threatRoute.chain.map(n => n.name)));
+
+  const topSupplier = Object.values(pre.involvement.pbSuppliers).filter(p => p.side === side).sort((a, b) => b.count - a.count)[0];
+  if (topSupplier && topSupplier.count >= 3)
+    out.push(finding(`Dangerous creator: ${topSupplier.name} supplied ${topSupplier.count} penalty-box entries — a frequent creator worth accounting for.`, topSupplier.count, [topSupplier.name]));
+
+  const caEntries = pre.funnel.entries.filter(e => e.teamSide === side && e.isCounterAttack);
+  const caShots = caEntries.reduce((n, e) => n + e.shotCount, 0);
+  const caGoals = caEntries.reduce((n, e) => n + e.goalCount, 0);
+  if (caEntries.length >= 2 && caShots > 0)
+    out.push(finding(`Successful counter-attacks: ${caEntries.length} counter-attacking sequence(s) produced ${caShots} shot(s) and ${caGoals} goal(s) — may be exploitable if transitions are not accounted for.`, caEntries.length));
+
+  const setPieceGoals = ['corner', 'deliveredFreeKick', 'directFreeKick']
+    .map(k => pre.setPieces[k]?.[side]).filter(Boolean).reduce((n, c) => n + (c.goals || 0), 0);
+  const setPieceAttempts = ['corner', 'deliveredFreeKick', 'directFreeKick']
+    .map(k => pre.setPieces[k]?.[side]).filter(Boolean).reduce((n, c) => n + (c.attempts || 0), 0);
+  if (setPieceAttempts >= 3 && setPieceGoals > 0)
+    out.push(finding(`Set-piece production: ${setPieceGoals} goal(s) from ${setPieceAttempts} set-piece attempt(s) — worth being wary of in this match's pattern.`, setPieceAttempts));
+
+  // High shot conversion is a THREAT/STRENGTH for the team that did it, never a
+  // vulnerability — the wording must not read as "this team is exploitable because they
+  // finish well".
+  const shotTotals = Object.values(pre.shotProfile[side]).reduce((acc, r) => ({ attempts: acc.attempts + r.attempts, goals: acc.goals + r.goals }), { attempts: 0, goals: 0 });
+  if (shotTotals.attempts >= 3 && shotTotals.goals / shotTotals.attempts >= 0.4)
+    out.push(finding(`Clinical finishing in this match — ${shotTotals.goals}/${shotTotals.attempts} shots were goals. Limiting shot volume may therefore be important.`, shotTotals.attempts));
+
+  return capAndDedup(out);
+}
+
+// Tactical implications reference ALREADY-GENERATED findings — no new statistic is
+// computed here — so an implication can never appear without the evidence behind it
+// already having survived the same confidence/threshold rules as everything else.
+function assessTacticalImplications(strengths, weaknesses, matchups, vulnerabilities, team, opponentTeam) {
+  const out = [];
+  for (const v of vulnerabilities) {
+    if (out.length >= 5) break;
+    const player = v.players[0];
+    if (!player) continue;
+    const hasContrast = matchups.some(m => m.text.includes('far less success') && m.players.includes(player));
+    out.push(`Where possible, test the matchup involving ${player} rather than assuming ${hasContrast ? 'symmetric defensive matchups are equivalent' : 'this holds against every attacker'} (${team}, ${v.confidence.toLowerCase()} confidence).`);
+  }
+  for (const s of strengths) {
+    if (out.length >= 5) break;
+    if (!/progression was productive/.test(s.text)) continue;
+    const lane = s.text.match(/^(\w+)-side/)?.[1];
+    if (lane) out.push(`Consider contesting ${team}'s ${lane.toLowerCase()}-side progression earlier — this is where PB deliveries concentrated (${s.confidence.toLowerCase()} confidence).`);
+  }
+  for (const w of weaknesses) {
+    if (out.length >= 5) break;
+    if (!/did not translate efficiently into shots/.test(w.text)) continue;
+    out.push(`Strong PB defending may be particularly valuable against ${team} — they reached the PB frequently but converted few of those chances into shots (${w.confidence.toLowerCase()} confidence).`);
+  }
+  return out.slice(0, 5);
+}
+
+function buildScoutingAssessment(pre, side, team) {
+  const strengths = assessStrengths(pre, side, team);
+  const weaknesses = assessWeaknesses(pre, side, team);
+  const keyMatchups = assessKeyMatchups(pre, side, team);
+  const vulnerabilities = assessVulnerabilities(pre, side, team);
+  const threats = assessThreats(pre, side, team);
+  const tacticalImplications = assessTacticalImplications(strengths, weaknesses, keyMatchups, vulnerabilities, team);
+  return { strengths, weaknesses, keyMatchups, vulnerabilities, threats, tacticalImplications };
+}
+
+function scoutingAssessmentLines(assessment) {
+  const section = (title, items, isImplications = false) => [
+    `#### ${title}`,
+    ...(items.length
+      ? (isImplications ? items : items.map(fmtFinding))
+      : ['None observed at the confidence thresholds this report applies.']),
+    '',
+  ];
+  return [
+    SINGLE_MATCH_EVIDENCE_NOTE,
+    '',
+    ...section('Strengths observed', assessment.strengths),
+    ...section('Weaknesses observed', assessment.weaknesses),
+    ...section('Key matchup findings', assessment.keyMatchups),
+    ...section('Potential vulnerabilities', assessment.vulnerabilities),
+    ...section('Threats to account for', assessment.threats),
+    ...section('Tactical implications', assessment.tacticalImplications, true),
+  ];
+}
+
 function buildTeamScoutingSection(match, side, teamName, pre) {
   const scorers = groupByPlayer(pre.scorers, s => s.scorer).filter(e => e.teamSide === side);
   const assisters = groupByPlayer(pre.scorers.filter(s => s.assist?.name), s => s.assist).filter(e => e.teamSide === side);
@@ -2480,6 +2731,9 @@ function buildTeamScoutingSection(match, side, teamName, pre) {
     '', '### Set pieces / GK',
     '#### Set pieces', ...scoutingSetPieceLines(pre.setPieces, side),
     '', '#### Goalkeeper', ...scoutingGoalkeeperLines(pre.gkAnalysis, side),
+
+    '', '### Scouting Assessment',
+    ...scoutingAssessmentLines(buildScoutingAssessment(pre, side, teamName)),
   ].join('\n');
 }
 
