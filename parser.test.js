@@ -824,6 +824,61 @@ test('a poor shot angle is recognized and preserved', () => {
   assert.equal(shot.outcome, 'GOAL');
 });
 
+test('the defender positioning phrase is captured on the duel, not discarded', () => {
+  const narrative = [
+    'Minute 1',
+    'Opportunity for AC Pasofino.',
+    'Midfield',
+    'Martín Miguel Bilardo [RB] attempted low decent pass to Nicolai Bakkely [RM]',
+    'Julio Manuel Wu [LW] got superb assistance, and was out of position.',
+    'Nicolai Bakkely [RM] made good reception and took control of the ball.',
+  ].join('\n');
+  const telemetry = [
+    "1' - H - O_MID_START",
+    "1' - H - V_PASS - (65)",
+    "1' - A - V_ASSISTANCE - (85)",
+    "1' - H - V_RECEPTION - (60)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'AC Pasofino', awayTeam: 'Swizz FC' });
+  const duel = match.opportunities[0].steps.find(s => s.stepType === 'MID_DUEL');
+  assert.equal(duel.positioning, 'out of position');
+});
+
+test('the goalkeeper positioning phrase is captured on the shot, tolerating the stray space FinalWhistle sometimes emits before the comma', () => {
+  const narrative = [
+    'Minute 51',
+    'Opportunity for AC Pasofino.',
+    'Penalty Box',
+    'Paolo van Bost [CM] attempted low excellent pass to Gniewosz Ryszawa [FW]',
+    'Joar Skattum [CB] got good assistance, and was close.',
+    'Gniewosz Ryszawa [FW] made superb reception and took control of the ball.',
+    'Goal Attempt',
+    'Gniewosz Ryszawa [FW] made excellent shot.',
+    'Vít Šafařík [GK] was totally in the wrong position, and made good effort to prevent goal.',
+    'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "51' - H - O_PB_START",
+    "51' - H - V_PASS - (85)",
+    "51' - A - V_ASSISTANCE - (60)",
+    "51' - H - V_RECEPTION - (90)",
+    "51' - H - V_SHOT - (85)",
+    "51' - A - V_REFLEX - (40)",
+    "51' - H - E_GOAL",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, { homeTeam: 'AC Pasofino', awayTeam: 'Swizz FC' });
+  const shot = match.opportunities[0].steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shot.gkPositioning, 'totally in the wrong position');
+
+  const narrativeStraySpace = narrative.replace(
+    'Vít Šafařík [GK] was totally in the wrong position, and made good effort to prevent goal.',
+    'Vít Šafařík [GK] was on the right spot , and made good effort to prevent goal.',
+  );
+  const matchStraySpace = parseMatch(telemetry, narrativeStraySpace, { homeTeam: 'AC Pasofino', awayTeam: 'Swizz FC' });
+  const shotStraySpace = matchStraySpace.opportunities[0].steps.find(s => s.stepType === 'SHOT');
+  assert.equal(shotStraySpace.gkPositioning, 'on the right spot', 'trailing space before the comma must be trimmed off');
+});
+
 test('a passer pressured into a rushed play is recognized and preserved on the pass', () => {
   const narrative = [
     'Minute 88',

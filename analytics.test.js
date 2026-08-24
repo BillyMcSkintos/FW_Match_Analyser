@@ -350,6 +350,40 @@ test('firstFailedDefensiveStage identifies the duel the attacker actually won, c
   assert.equal(chain.finalDefender.name, 'Player E');
 });
 
+test('firstFailedDefensiveStage picks the EARLIEST duel the attacker won when there are two — a later PB failure never overrides an earlier midfield failure', () => {
+  const narrative = [
+    'Minute 30', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made superb reception and took control of the ball.',
+    'Penalty Box',
+    'Player B [CM] attempted high good pass to Player D [FW]',
+    'Player E [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, Player E [CB] made weak tackle.',
+    'Player D [FW] took control of the ball.',
+    'Goal Attempt', 'Player D [FW] made superb shot.', 'Player F [GK] was fooled.', 'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "30' - H - O_MID_START", "30' - H - V_PASS - (55)", "30' - A - V_ASSISTANCE - (30)", "30' - H - V_RECEPTION - (65)",
+    "30' - H - V_PASS - (55)", "30' - A - V_ASSISTANCE - (40)", "30' - H - V_RECEPTION - (65)", "30' - A - V_TACKLING - (35)",
+    "30' - H - V_SHOT - (70)", "30' - A - V_REFLEX - (20)", "30' - H - E_GOAL",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const chain = A.defensiveFailureChains(match)[0];
+  // Player C (MID_DUEL, "was close" — no tackle, attacker won on positioning) is the
+  // EARLIER duel the attacker won; Player E (PB_DUEL, contested and lost) is later in
+  // the same chain. The earliest one must win, not whichever the loop happens to visit
+  // last.
+  assert.equal(chain.firstFailedDefensiveStage.stepType, 'MID_DUEL');
+  assert.equal(chain.firstFailedDefensiveStage.defender.name, 'Player C');
+  assert.notEqual(chain.firstFailedDefensiveStage.defender.name, 'Player E',
+    'the later PB duel loss must not override the earlier midfield one as "earliest failed"');
+  // finalDefender is a different, deliberately later-scoped field — the LAST duel
+  // defender before the shot — so the two fields diverging here is itself correct, not
+  // a contradiction (this is exactly the distinction the exposure-role split preserves).
+  assert.equal(chain.finalDefender.name, 'Player E');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // phasePerformance / tactical-phase attribution
 // ─────────────────────────────────────────────────────────────────────────────
@@ -560,6 +594,58 @@ test('playerStatistics aggregates named actions, substitution minutes, assists, 
   assert.equal(sub.substitutedInMinute, 60);
 });
 
+test('playerStatistics breaks duel wins into Position/Control/Tackle, combining attacking and defending duels into one per-player count', () => {
+  const match = {
+    playerRegistry: {},
+    opportunities: [{ minute: 1, steps: [
+      // No tackle attempted (positioning alone decided it) — a Position win for the attacker.
+      { stepType: 'MID_DUEL', attacker: { name: 'Attacker A', position: 'FW' },
+        defender: { name: 'Defender X', position: 'CB' },
+        attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away',
+        outcome: 'POSSESSION', values: {} },
+    ] }, { minute: 2, steps: [
+      // Tackle contested, attacker keeps the ball — a Control win for the attacker.
+      { stepType: 'PB_DUEL', attacker: { name: 'Attacker A', position: 'FW' },
+        defender: { name: 'Defender X', position: 'CB' },
+        attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away',
+        outcome: 'WON', values: { tackle: { value: 40 } } },
+    ] }, { minute: 3, steps: [
+      // Tackle contested, defender wins it — a Tackle win for the defender, not a win for the attacker.
+      { stepType: 'MID_DUEL', attacker: { name: 'Attacker A', position: 'FW' },
+        defender: { name: 'Defender X', position: 'CB' },
+        attackingTeam: 'Home Team', attackingSide: 'home',
+        defendingTeam: 'Away Team', defendingSide: 'away',
+        outcome: 'CLEARED', values: { tackle: { value: 70 } } },
+    ] }, { minute: 4, steps: [
+      // A dribble is mechanically the same 1v1 contest — must count toward Defender X's own
+      // duel record as the attacker this time, combined with their earlier defensive duels.
+      { stepType: 'DRIB', dribbler: { name: 'Defender X', position: 'CB' },
+        defender: { name: 'Attacker A', position: 'FW' },
+        attackingTeam: 'Away Team', attackingSide: 'away',
+        defendingTeam: 'Home Team', defendingSide: 'home',
+        outcome: 'POSSESSION', values: {} },
+    ] }],
+    tacticalEvents: [],
+  };
+  const stats = A.playerStatistics(match);
+  const attackerA = stats.home.find(p => p.name === 'Attacker A');
+  const defenderX = stats.away.find(p => p.name === 'Defender X');
+
+  // Attacker A: attacked in all 4 duels (won 2, lost 1) and defended in 1 (the dribble) = 4 played.
+  assert.equal(attackerA.duelsPlayed, 4);
+  assert.equal(attackerA.duelsWonPosition, 1);
+  assert.equal(attackerA.duelsWonControl, 1);
+  assert.equal(attackerA.duelsWonTackle, 0, 'Attacker A never defended a contested tackle successfully');
+
+  // Defender X: defended in 3 duels (won 1 via tackle) and attacked in 1 (the dribble, won) = 4 played.
+  assert.equal(defenderX.duelsPlayed, 4);
+  assert.equal(defenderX.duelsWonPosition, 1, 'the won dribble counts as a Position win — no tackle was contested');
+  assert.equal(defenderX.duelsWonControl, 0);
+  assert.equal(defenderX.duelsWonTackle, 1);
+});
+
 test('playerStatistics uses a 120-minute duration when extra time is observed', () => {
   const stats = A.playerStatistics({
     playerRegistry: { Veteran: { team: 'Home', side: 'home', positions: ['CM'] } },
@@ -649,6 +735,33 @@ test('laneAnalysis buckets by actual reported position, not preferred foot, and 
   assert.equal(lanes.home.left.opportunityStarts, 1, 'LB starts on the left lane');
   assert.equal(lanes.home.left.passes, 1);
   assert.ok(lanes.note.toLowerCase().includes('preferred side'));
+});
+
+test('laneAnalysis keeps attack origin and turnover location as separate lanes — a wide start does not mask a central PB turnover', () => {
+  const narrative = [
+    'Minute 15', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [RM]',
+    'Player C [LB] got weak assistance, and was close.',
+    'Player B [RM] made superb reception and took control of the ball.',
+    'Penalty Box',
+    'Player B [RM] attempted low decent pass to Player D [FW]',
+    'Player E [CB] got good assistance, and was in decent position.',
+    'Player D [FW] made weak reception, Player E [CB] made superb tackle.',
+    'Player E [CB] cleared the ball to safety.',
+  ].join('\n');
+  const telemetry = [
+    "15' - H - O_MID_START", "15' - H - V_PASS - (55)", "15' - A - V_ASSISTANCE - (35)", "15' - H - V_RECEPTION - (65)",
+    "15' - H - V_PASS - (45)", "15' - A - V_ASSISTANCE - (55)", "15' - H - V_RECEPTION - (30)", "15' - A - V_TACKLING - (70)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const lanes = A.laneAnalysis(match);
+  // The attack STARTED on the right (RB), but the turnover happened via the central FW
+  // losing the PB duel — these must land in different lane buckets, not collapse into
+  // one number that would misreport where the attack actually originated.
+  assert.equal(lanes.home.right.opportunityStarts, 1, 'the attack started from the right-back');
+  assert.equal(lanes.home.center.opportunityStarts ?? 0, 0);
+  assert.equal(lanes.home.center.turnovers, 1, 'the turnover itself happened via the central forward');
+  assert.equal(lanes.home.right.turnovers ?? 0, 0, 'the turnover must not be misattributed back to the origin lane');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -751,6 +864,137 @@ test('an observed shot type is reported without implying the corresponding playe
   assert.ok(profile.note.includes('does not by itself prove'));
 });
 
+test('a direct free kick narrated as a Long Shot Goal Attempt keeps both dimensions instead of collapsing into just one', () => {
+  const narrative = [
+    'Minute 40', 'Opportunity for Home Team.', 'Free Kick',
+    'Player A [CM] has decided to restart the attack',
+    'Long Shot Goal Attempt',
+    'Player A [CM] made superb shot.',
+    'Player G [GK] was fooled.',
+    'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "40' - H - O_FK_START", "40' - H - V_SHOT - (80)", "40' - A - V_REFLEX - (15)", "40' - H - E_GOAL",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const shots = A.collectShotEvents(match);
+  assert.equal(shots.length, 1);
+  assert.equal(shots[0].isDirectFreeKick, true);
+  assert.equal(shots[0].technique, 'long shot', 'technique and set-piece context are separate dimensions on the same event');
+  const profile = A.shotProfileAnalysis(match);
+  assert.equal(profile.home['long shot (direct free kick)'].attempts, 1,
+    'the combined bucket must preserve both facts instead of only "long shot" or only "direct free kick"');
+});
+
+test('a penalty is classified by technique regardless of the isDirectFreeKick/isLongShot flags', () => {
+  const narrative = [
+    'Minute 40', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [CM] attempted low good pass to Player D [FW]',
+    'Player E [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, Player E [CB] made weak tackle.',
+    'Player E [CB] committed a foul.',
+    'Goal Attempt',
+    'Player D [FW] made superb shot.',
+    'Player G [GK] was fooled.',
+    'GOAL!',
+  ].join('\n');
+  const telemetry = [
+    "40' - H - O_PB_START", "40' - H - V_PASS - (55)", "40' - A - V_ASSISTANCE - (40)",
+    "40' - H - V_RECEPTION - (60)", "40' - A - V_TACKLING - (30)",
+    "40' - A - E_PENALTY_KICK",
+    "40' - H - V_SHOT - (75)", "40' - A - V_REFLEX - (20)", "40' - H - E_GOAL",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const profile = A.shotProfileAnalysis(match);
+  assert.ok(profile.home.penalty, 'a penalty must classify as penalty, not get folded into a direct-free-kick/long-shot bucket');
+});
+
+test('an off-target shot is counted in shots faced but not in on-target, and a GK interception is not a shot at all', () => {
+  const narrative = [
+    'Minute 40', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [LM] attempted low good pass to Player D [FW]',
+    'Player E [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, Player E [CB] made weak tackle.',
+    'Player D [FW] took control of the ball.',
+    'Goal Attempt',
+    'Player D [FW] made poor shot.',
+    'Player G [GK] was on the right spot, and made good effort to prevent goal.',
+    'Missed the goal wide!',
+  ].join('\n');
+  const telemetry = [
+    "40' - H - O_PB_START", "40' - H - V_PASS - (55)", "40' - A - V_ASSISTANCE - (30)",
+    "40' - H - V_RECEPTION - (65)", "40' - A - V_TACKLING - (35)",
+    "40' - H - V_SHOT - (25)", "40' - A - V_REFLEX - (60)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Player G'];
+  assert.equal(gk.shotsFaced, 1, 'the narrative still named a keeper for this attempt, so it counts as faced');
+  assert.equal(gk.onTarget, 0, 'a missed (off-target) shot must not count as on target');
+  assert.equal(gk.offTargetOrBlocked, 1);
+  assert.equal(gk.saves, 0);
+  assert.equal(gk.interceptions, 0);
+});
+
+test('a GK interception does not increment shotsFaced or onTarget — it is not a shot event at all', () => {
+  const narrative = [
+    'Minute 40', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [LM] attempted low good pass to Player D [FW]',
+    'Player G [GK] intercepted the ball.',
+  ].join('\n');
+  const telemetry = ["40' - H - O_PB_START", "40' - H - V_PASS - (55)"].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Player G'];
+  assert.equal(gk.interceptions, 1);
+  assert.equal(gk.shotsFaced, 0, 'an interception is not a shot faced');
+  assert.equal(gk.onTarget, 0);
+});
+
+test('a shot whose resolution line was never captured (a scrape cut off mid-attempt) is counted as shotsFaced but unresolved, not silently folded into on-target or off-target', () => {
+  // The GK is named ("was ready, and made X effort") but the narrative stops there —
+  // no GOAL!/save/miss resolution line follows, exactly like a report scraped while the
+  // match was still in progress.
+  const narrative = [
+    'Minute 40', 'Opportunity for Home Team.', 'Penalty Box',
+    'Player A [LM] attempted low good pass to Player D [FW]',
+    'Player E [CB] got decent assistance, and was in decent position.',
+    'Player D [FW] made good reception, Player E [CB] made weak tackle.',
+    'Player D [FW] took control of the ball.',
+    'Goal Attempt',
+    'Player D [FW] made decent shot.',
+    'Player G [GK] was ready, and made good effort to prevent goal.',
+  ].join('\n');
+  const telemetry = [
+    "40' - H - O_PB_START", "40' - H - V_PASS - (55)", "40' - A - V_ASSISTANCE - (30)",
+    "40' - H - V_RECEPTION - (65)", "40' - A - V_TACKLING - (35)",
+    "40' - H - V_SHOT - (60)", "40' - A - V_REFLEX - (40)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, HA);
+  const shots = A.collectShotEvents(match);
+  assert.equal(shots.length, 1);
+  // Not null: parser.js's phase.outcome is a single shared field across the whole PB
+  // progression, and "took control of the ball" already stamped it POSSESSION as a
+  // work-in-progress marker before the shot — with no later resolution line to
+  // overwrite it, that stale mid-progression value is what the SHOT step inherits. The
+  // point of this test is that goalkeeperAnalysis must not mistake THIS for any of
+  // GOAL/SAVED/FUMBLED/MISSED/POST/SHOT_BLOCKED — its catch-all handles any non-terminal
+  // value, not just a literal null.
+  assert.equal(shots[0].result, 'POSSESSION');
+  assert.equal(shots[0].isGoal, false);
+  assert.equal(shots[0].isSaved, false);
+  assert.equal(shots[0].isFumbled, false);
+  assert.equal(shots[0].isMissed, false);
+  assert.equal(shots[0].isBlocked, false);
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Player G'];
+  assert.equal(gk.shotsFaced, 1);
+  assert.equal(gk.onTarget, 0, 'must not guess this was on target');
+  assert.equal(gk.offTargetOrBlocked, 0, 'must not guess this was off target either');
+  assert.equal(gk.unresolved, 1);
+  assert.equal(gk.shotsFaced, gk.onTarget + gk.offTargetOrBlocked + gk.unresolved,
+    'shotsFaced must always equal the sum of its three sub-categories');
+  const reconciliation = A.reconcileScoutingReport(match);
+  assert.equal(reconciliation.valid, true, JSON.stringify(reconciliation.mismatches));
+});
+
 test('an observed high pass is counted without implying a High Ball order', () => {
   const narrative = [
     'Minute 10', 'Opportunity for Home Team.', 'Midfield',
@@ -819,4 +1063,535 @@ test('exact parser validation keeps analytics confidence exact', () => {
   const match = parseMatch(midTelemetryLines(10, 'H').join('\n'), narrative, HA);
   assert.equal(match.validation.confidence, 'exact');
   assert.equal(A.opportunityFunnel(match).confidence, 'exact');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// duelMatchups
+// ─────────────────────────────────────────────────────────────────────────────
+
+function pbDuelStep({ attacker, defender, outcome, tackle, side = 'home', isCA = false }) {
+  return {
+    stepType: 'PB_DUEL', attacker, defender, outcome, isCA,
+    attackingTeam: side === 'home' ? 'Home Team' : 'Away Team', attackingSide: side,
+    defendingTeam: side === 'home' ? 'Away Team' : 'Home Team', defendingSide: side === 'home' ? 'away' : 'home',
+    values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: tackle != null ? { value: tackle } : null },
+  };
+}
+function shotStep({ shooter, outcome, side = 'home', isCA = false }) {
+  return {
+    stepType: 'SHOT', shooter, outcome, isCA,
+    attackingSide: side, defendingSide: side === 'home' ? 'away' : 'home',
+    values: { shot: { value: 70 }, gkSave: { value: 50 } },
+  };
+}
+const P = (name, position) => ({ name, position });
+
+test('duelMatchups: repeated attacker-v-defender PB matchup accumulates one entry with contests=2', () => {
+  const A1 = P('Tsur', 'FW'), D1 = P('Golan', 'CB');
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D1, outcome: 'WON', tackle: 40 })] },
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D1, outcome: 'CLEARED', tackle: 60 })] },
+  ] };
+  const matchups = A.duelMatchups(match);
+  assert.equal(matchups.length, 1);
+  assert.equal(matchups[0].contests, 2);
+  assert.equal(matchups[0].attackerWins, 1);
+  assert.equal(matchups[0].defenderWins, 1);
+  assert.equal(matchups[0].attackerWinRate, 0.5);
+  assert.equal(matchups[0].zone, 'PENALTY_BOX');
+});
+
+test('duelMatchups: same attacker facing two different defenders produces two distinct entries', () => {
+  const A1 = P('Tsur', 'FW');
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: P('Golan', 'CB'), outcome: 'WON', tackle: 40 })] },
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: P('Silva', 'CB'), outcome: 'WON', tackle: 40 })] },
+  ] };
+  const matchups = A.duelMatchups(match);
+  assert.equal(matchups.length, 2);
+  assert.deepEqual(matchups.map(m => m.defender).sort(), ['Golan', 'Silva']);
+});
+
+test('duelMatchups: same defender facing two different attackers produces two distinct entries', () => {
+  const D1 = P('Golan', 'CB');
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: P('Tsur', 'FW'), defender: D1, outcome: 'CLEARED', tackle: 60 })] },
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: P('Ryszawa', 'FW'), defender: D1, outcome: 'CLEARED', tackle: 60 })] },
+  ] };
+  const matchups = A.duelMatchups(match);
+  assert.equal(matchups.length, 2);
+  assert.deepEqual(matchups.map(m => m.attacker).sort(), ['Ryszawa', 'Tsur']);
+});
+
+test('duelMatchups: an attacker win followed by a shot is credited to that matchup, a win followed by a goal increments both counters', () => {
+  const A1 = P('Tsur', 'FW'), D1 = P('Golan', 'CB');
+  const duel1 = pbDuelStep({ attacker: A1, defender: D1, outcome: 'WON', tackle: 40 });
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [duel1, shotStep({ shooter: A1, outcome: 'SAVED' })] },
+  ] };
+  let matchups = A.duelMatchups(match);
+  assert.equal(matchups[0].shotsAfterAttackerWin, 1);
+  assert.equal(matchups[0].goalsAfterAttackerWin, 0);
+
+  const duel2 = pbDuelStep({ attacker: A1, defender: D1, outcome: 'WON', tackle: 40 });
+  const matchGoal = { opportunities: [
+    { teamSide: 'home', steps: [duel2, shotStep({ shooter: A1, outcome: 'GOAL' })] },
+  ] };
+  matchups = A.duelMatchups(matchGoal);
+  assert.equal(matchups[0].shotsAfterAttackerWin, 1);
+  assert.equal(matchups[0].goalsAfterAttackerWin, 1);
+});
+
+test('duelMatchups: a defender win (PB loss for the attacker) correctly terminates the attack with no shot credited', () => {
+  const A1 = P('Tsur', 'FW'), D1 = P('Golan', 'CB');
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D1, outcome: 'CLEARED', tackle: 70 })] },
+  ] };
+  const matchups = A.duelMatchups(match);
+  assert.equal(matchups[0].defenderWins, 1);
+  assert.equal(matchups[0].attackerWins, 0);
+  assert.equal(matchups[0].shotsAfterAttackerWin, 0);
+});
+
+test('duelMatchups: CA action ownership stays step-side correct — a pre-CA duel is not credited with a post-CA shot', () => {
+  const A1 = P('Wu', 'LW'), D1 = P('Marks', 'RB');
+  const preCA = pbDuelStep({ attacker: A1, defender: D1, outcome: 'WON', tackle: 30, side: 'home', isCA: false });
+  const postCAShot = shotStep({ shooter: P('Dia', 'FW'), outcome: 'GOAL', side: 'away', isCA: true });
+  const match = { opportunities: [{ teamSide: 'home', isCounterAttack: true, steps: [preCA, postCAShot] }] };
+  const matchups = A.duelMatchups(match);
+  assert.equal(matchups[0].attacker, 'Wu');
+  assert.equal(matchups[0].shotsAfterAttackerWin, 0, 'the post-CA shot belongs to a different attacking side, not this pre-CA duel');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pbTargetAnalysis / pbDefenderAnalysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('pbTargetAnalysis and pbDefenderAnalysis report matching won/lost counts and the main opponent faced', () => {
+  const A1 = P('Tsur', 'FW'), D1 = P('Golan', 'CB'), D2 = P('Silva', 'CB');
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D1, outcome: 'WON', tackle: 40 }), shotStep({ shooter: A1, outcome: 'GOAL' })] },
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D1, outcome: 'CLEARED', tackle: 70 })] },
+    { teamSide: 'home', steps: [pbDuelStep({ attacker: A1, defender: D2, outcome: 'CLEARED', tackle: 70 })] },
+  ] };
+  const targets = A.pbTargetAnalysis(match);
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].pbContests, 3);
+  assert.equal(targets[0].won, 1);
+  assert.equal(targets[0].lost, 2);
+  assert.equal(targets[0].goals, 1);
+  assert.equal(targets[0].mainDefender.name, 'Golan');
+  assert.equal(targets[0].mainDefender.contests, 2);
+
+  const defenders = A.pbDefenderAnalysis(match);
+  const golan = defenders.find(d => d.player === 'Golan');
+  assert.equal(golan.contests, 2);
+  assert.equal(golan.won, 1);
+  assert.equal(golan.lost, 1);
+  assert.equal(golan.goalsAllowedAfterLoss, 1);
+  assert.equal(golan.mainOpponent.name, 'Tsur');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// attackingRoutes
+// ─────────────────────────────────────────────────────────────────────────────
+
+function passStep(stepType, from, to, side = 'home') {
+  return { stepType, from, to, attackingSide: side, defendingSide: side === 'home' ? 'away' : 'home', values: { pass: { value: 60 } } };
+}
+
+test('attackingRoutes: a repeated three-player chain (RB -> RM -> FW) is aggregated as one route with occurrences=3', () => {
+  const rb = P('Bilardo', 'RB'), rm = P('Bakkely', 'RM'), fw = P('Tsur', 'FW');
+  const oneOpp = () => ({ teamSide: 'home', steps: [
+    passStep('START_PASS', rb, rm),
+    passStep('PB_PASS', rm, fw),
+    shotStep({ shooter: fw, outcome: 'SAVED' }),
+  ] });
+  const match = { opportunities: [oneOpp(), oneOpp(), oneOpp()] };
+  const routes = A.attackingRoutes(match);
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].occurrences, 3);
+  assert.deepEqual(routes[0].chain.map(n => n.name), ['Bilardo', 'Bakkely', 'Tsur']);
+  assert.equal(routes[0].pbEntries, 3);
+  assert.equal(routes[0].shots, 3);
+});
+
+test('attackingRoutes: a direct defender-to-forward route (no midfield relay) is captured as its own two-node chain', () => {
+  const cb = P('Harrell', 'CB'), fw = P('Tsur', 'FW');
+  const match = { opportunities: [{ teamSide: 'home', steps: [
+    passStep('START_PASS', cb, fw),
+    shotStep({ shooter: fw, outcome: 'MISSED' }),
+  ] }] };
+  const routes = A.attackingRoutes(match);
+  assert.equal(routes.length, 1);
+  assert.deepEqual(routes[0].chain.map(n => n.name), ['Harrell', 'Tsur']);
+});
+
+test('attackingRoutes: a chain occurrence with no PB entry is still counted, just with pbEntries=0', () => {
+  const rb = P('Bilardo', 'RB'), cm = P('Styrczula', 'CM');
+  const match = { opportunities: [{ teamSide: 'home', steps: [
+    passStep('START_PASS', rb, cm),
+  ] }] };
+  const routes = A.attackingRoutes(match);
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].pbEntries, 0);
+  assert.equal(routes[0].shots, 0);
+});
+
+test('attackingRoutes: a broken chain (recovery by an unrelated player) is not joined into one route', () => {
+  const rb = P('Bilardo', 'RB'), cm = P('Styrczula', 'CM'), other = P('Recovered', 'LM'), fw = P('Tsur', 'FW');
+  // Styrczula receives the start pass, but the PB pass is sent by an unrelated player
+  // (e.g. after a recovered loose ball) — the chain must stop at Styrczula, not silently
+  // extend to Tsur as if Styrczula had carried it forward themselves.
+  const match = { opportunities: [{ teamSide: 'home', steps: [
+    passStep('START_PASS', rb, cm),
+    passStep('PB_PASS', other, fw),
+  ] }] };
+  const routes = A.attackingRoutes(match);
+  assert.equal(routes.length, 1);
+  assert.deepEqual(routes[0].chain.map(n => n.name), ['Bilardo', 'Styrczula'], 'the chain must stop where continuity broke, not jump to the unrelated PB pass');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// attackTermination
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('attackTermination categorizes each opportunity exactly once, using finalOutcome so a corner continuation is not double-counted', () => {
+  const narrative = [
+    'Minute 5', 'Opportunity for Home Team.', 'Midfield',
+    'Player A [RB] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made excellent reception and took control of the ball.',
+    'Penalty Box',
+    'Player B [CM] attempted low decent pass to Player D [FW]',
+    'Player E [CB] got good assistance, and was in decent position.',
+    'Player D [FW] made weak reception, Player E [CB] made superb tackle.',
+    'Player E [CB] sent ball to corner.',
+    'Corner',
+    'Player B [CM] made high decent pass to Player F [CB]',
+    'Player E [CB] got weak assistance, and was close.',
+    'Player F [CB] made superb reception and took control of the ball.',
+    'Goal Attempt',
+    'Player F [CB] made excellent shot.',
+    'Player G [GK] was ready, and made excellent effort to prevent goal.',
+    'GOAL!',
+  ].join('\n');
+  const match = parseMatch('', narrative, HA);
+  const counts = A.attackTermination(match);
+  const total = Object.values(counts.home).reduce((a, b) => a + b, 0);
+  assert.equal(total, 1, 'one opportunity, however many phases it passed through via the corner, must count as exactly one termination');
+  assert.equal(counts.home.GOAL, 1);
+});
+
+test('attackTermination reports OTHER_UNKNOWN rather than forcing an unresolved outcome into a category', () => {
+  const opp = { teamSide: 'home', finalOutcome: null, steps: [{ stepType: 'START_PASS', from: P('A', 'RB'), to: P('B', 'CM') }] };
+  assert.equal(A.classifyAttackTermination(opp), 'OTHER_UNKNOWN');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fatigueImpact — tired/very-tired/substitution timeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+function tirednessEvent(minute, level, player, sequence) {
+  return { type: 'TIREDNESS', minute, sequence, team: 'Home Team', teamSide: 'home', player, level };
+}
+function subEvent(minute, playerOut, sequence) {
+  return { type: 'SUBSTITUTION', minute, sequence, team: 'Home Team', teamSide: 'home', playerOut, playerIn: P('Sub', 'CM') };
+}
+
+test('fatigueImpact: tired -> very tired -> substituted computes both minute-deltas correctly', () => {
+  const player = P('Mustafa', 'CM');
+  const match = { tacticalEvents: [
+    tirednessEvent(42, 'TIRED', player, 42),
+    tirednessEvent(77, 'VERY_TIRED', player, 77),
+    subEvent(80, player, 80),
+  ], opportunities: [] };
+  const [result] = A.fatigueImpact(match);
+  assert.equal(result.firstTiredMinute, 42);
+  assert.equal(result.firstVeryTiredMinute, 77);
+  assert.equal(result.substitutedAtMinute, 80);
+  assert.equal(result.minutesFromFirstTiredToSub, 38);
+  assert.equal(result.minutesFromFirstVeryTiredToSub, 3);
+  assert.equal(result.remainedOnPitch, false);
+});
+
+test('fatigueImpact: a player reported tired but never substituted has remainedOnPitch true and null sub fields', () => {
+  const player = P('Ryszawa', 'FW');
+  const match = { tacticalEvents: [tirednessEvent(60, 'TIRED', player, 60)], opportunities: [] };
+  const [result] = A.fatigueImpact(match);
+  assert.equal(result.substitutedAtMinute, null);
+  assert.equal(result.remainedOnPitch, true);
+  assert.equal(result.minutesFromFirstTiredToSub, null);
+});
+
+test('fatigueImpact: a substitution before the player was ever reported very tired leaves minutesFromFirstVeryTiredToSub null', () => {
+  const player = P('Golan', 'CB');
+  const match = { tacticalEvents: [
+    tirednessEvent(50, 'TIRED', player, 50),
+    subEvent(65, player, 65),
+  ], opportunities: [] };
+  const [result] = A.fatigueImpact(match);
+  assert.equal(result.firstVeryTiredMinute, null);
+  assert.equal(result.minutesFromFirstVeryTiredToSub, null);
+  assert.equal(result.minutesFromFirstTiredToSub, 15);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// shot-producing opportunities vs total shot attempts
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('opportunityFunnel: a rebound producing two shot attempts in one opportunity counts as one shot-producing opportunity but two shot attempts', () => {
+  const fw = P('Tsur', 'FW');
+  const match = { opportunities: [{ teamSide: 'home', steps: [
+    shotStep({ shooter: fw, outcome: 'POST' }),
+    shotStep({ shooter: fw, outcome: 'GOAL' }),
+  ] }] };
+  const funnel = A.opportunityFunnel(match);
+  assert.equal(funnel.home.shots, 1, 'one opportunity produced a shot, regardless of how many shot events it contains');
+  assert.equal(funnel.home.shotAttempts, 2, 'both the post and the rebound goal are separate shot attempts');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// defensiveExposure
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('defensiveExposure counts outcome-based involvement, not a raw telemetry-value comparison', () => {
+  const attacker = P('Tsur', 'FW'), defender = P('Golan', 'CB');
+  // The defender "wins" this contest per the parsed outcome (CLEARED) even though the
+  // raw tackle number (30) is lower than the attacker's reception number (60) would
+  // suggest — defensiveExposure must follow the outcome, never re-judge from the values.
+  const duel = pbDuelStep({ attacker, defender, outcome: 'CLEARED', tackle: 30 });
+  duel.values.reception.value = 60;
+  const shot = shotStep({ shooter: attacker, outcome: 'GOAL' });
+  // A separate opportunity where the SAME defender instead loses (attacker wins outright)
+  // is what actually creates a shot chain for defensiveExposure to attribute.
+  const lostDuel = pbDuelStep({ attacker, defender, outcome: 'WON', tackle: 20 });
+  const match = { opportunities: [
+    { teamSide: 'home', steps: [duel] },
+    { teamSide: 'home', steps: [lostDuel, shot] },
+  ] };
+  const exposure = A.defensiveExposure(match);
+  const golan = exposure.find(e => e.player === 'Golan');
+  assert.equal(golan.shotChainsInvolvedIn, 1, 'only the chain that actually reached a shot counts as a shot chain');
+  assert.equal(golan.firstFailedDefensiveStageCount, 1);
+  assert.equal(golan.goalsFollowingLoss, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Counter-attack ownership correctness pass — regression coverage per the Medak III
+// validation (minute-36: Ravnogorac opens, loses the midfield duel, Medak counters
+// through Gešević -> Kopranović -> Løfsgaard and shoots). Every metric below must
+// attribute post-CA actions to the actual counter-attacking side (step.attackingSide),
+// never to the parent opportunity's nominal owner.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function caFixture({ outcome = 'SAVED' } = {}) {
+  const tail = outcome === 'GOAL'
+    ? ['Kari [GK] was ready, and made excellent effort to prevent goal.', 'GOAL!', '[0-1]']
+    : ['Kari [GK] was ready, and made excellent effort to prevent goal.', 'Kari [GK] managed to get hold of the ball.', '[0-0]'];
+  return [
+    'Minute 36', 'Opportunity for Ravnogorac.', 'Midfield',
+    'Player A [CM] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Counter attack', 'Midfield',
+    'Gešević [DM] attempted low good pass to Kopranović [RM]',
+    'Player X [CB] got weak assistance, and was close.',
+    'Kopranović [RM] made excellent reception and took control of the ball.',
+    'Penalty Box',
+    'Kopranović [RM] attempted low decent pass to Løfsgaard [FW]',
+    'Player Y [CB] got good assistance, and was in decent position.',
+    'Løfsgaard [FW] made weak reception, Player Y [CB] made superb tackle.',
+    'Løfsgaard [FW] took control of the ball.',
+    'Goal Attempt',
+    'Løfsgaard [FW] made decent shot.',
+    ...tail,
+  ].join('\n');
+}
+function caTelemetry(shotOutcomeTag = "36' - A - V_REFLEX - (70)") {
+  return [
+    "36' - A - O_MID_START", "36' - A - V_PASS - (55)", "36' - H - V_ASSISTANCE - (40)", "36' - A - V_RECEPTION - (30)", "36' - H - V_TACKLING - (75)",
+    "36' - H - E_COUNTER_ATTACK",
+    "36' - H - V_PASS - (60)", "36' - A - V_ASSISTANCE - (35)", "36' - H - V_RECEPTION - (70)",
+    "36' - H - V_PASS - (50)", "36' - A - V_ASSISTANCE - (55)", "36' - H - V_RECEPTION - (35)", "36' - A - V_TACKLING - (65)",
+    "36' - H - V_SHOT - (55)", shotOutcomeTag,
+  ].join('\n');
+}
+const CA_TEAMS = { homeTeam: 'Medak III', awayTeam: 'Ravnogorac' };
+
+test('CA scenario A: a counter-attack shot belongs to the counter-attacking team everywhere — funnel, shot profile, GK, PB target, PB defender', () => {
+  const match = parseMatch(caTelemetry(), caFixture(), CA_TEAMS);
+  const funnel = A.opportunityFunnel(match);
+  assert.equal(funnel.home.shotAttempts, 1, 'Medak (home) took the shot');
+  assert.equal(funnel.away.shotAttempts, 0, 'Ravnogorac (away) never got a shot away');
+  assert.equal(funnel.home.total, 1, 'Medak gets its own attacking-sequence entry');
+  assert.equal(funnel.home.fwOpportunities, 0, 'Medak never opened a narrative Opportunity-for-X container');
+  assert.equal(funnel.away.fwOpportunities, 1, 'Ravnogorac opened the one FW opportunity');
+
+  const profile = A.shotProfileAnalysis(match);
+  assert.equal(profile.home.normal.attempts, 1);
+  assert.deepEqual(profile.away, {});
+
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Kari'];
+  assert.equal(gk.side, 'away', "Kari plays for Ravnogorac even though he faced Medak's shot");
+  assert.equal(gk.shotsFaced, 1);
+  assert.equal(gk.saves, 1);
+
+  const target = A.pbTargetAnalysis(match).find(t => t.player === 'Løfsgaard');
+  assert.equal(target.side, 'home');
+  assert.equal(target.pbContests, 1);
+  assert.equal(target.won, 1);
+
+  const defender = A.pbDefenderAnalysis(match).find(d => d.player === 'Player Y');
+  assert.equal(defender.side, 'away');
+  assert.equal(defender.lost, 1);
+
+  const reconciliation = A.reconcileScoutingReport(match);
+  assert.equal(reconciliation.valid, true, `expected all invariants to hold: ${JSON.stringify(reconciliation.mismatches)}`);
+});
+
+test('CA scenario B: a counter-attack that ends before any shot records zero shots for both sides, not a phantom attribution', () => {
+  const narrative = [
+    'Minute 36', 'Opportunity for Ravnogorac.', 'Midfield',
+    'Player A [CM] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Counter attack', 'Midfield',
+    'Gešević [DM] attempted low good pass to Kopranović [RM]',
+    'Player X [CB] got good assistance, and was in decent position.',
+    'Kopranović [RM] made weak reception, Player X [CB] made superb tackle.',
+    'Player X [CB] cleared the ball to safety.',
+    '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "36' - A - O_MID_START", "36' - A - V_PASS - (55)", "36' - H - V_ASSISTANCE - (40)", "36' - A - V_RECEPTION - (30)", "36' - H - V_TACKLING - (75)",
+    "36' - H - E_COUNTER_ATTACK",
+    "36' - H - V_PASS - (50)", "36' - A - V_ASSISTANCE - (60)", "36' - H - V_RECEPTION - (25)", "36' - A - V_TACKLING - (70)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, CA_TEAMS);
+  const funnel = A.opportunityFunnel(match);
+  assert.equal(funnel.home.shotAttempts, 0);
+  assert.equal(funnel.away.shotAttempts, 0);
+  assert.equal(funnel.home.total, 1, "Medak's own (shotless) counter-attack sequence still gets counted");
+  assert.equal(funnel.home.reachedMidfield, 1);
+  const reconciliation = A.reconcileScoutingReport(match);
+  assert.equal(reconciliation.valid, true, JSON.stringify(reconciliation.mismatches));
+});
+
+test('CA scenario C: a counter-attack goal is attributed to the counter-attacking team, not the parent opportunity owner', () => {
+  const match = parseMatch(caTelemetry("36' - H - E_GOAL"), caFixture({ outcome: 'GOAL' }), CA_TEAMS);
+  const funnel = A.opportunityFunnel(match);
+  assert.equal(funnel.home.goals, 1, "Medak's counter-attack sequence scored");
+  assert.equal(funnel.away.goals, 0);
+  const shots = A.collectShotEvents(match);
+  assert.equal(shots.length, 1);
+  assert.equal(shots[0].attackingSide, 'home');
+  assert.equal(shots[0].isGoal, true);
+  const gk = A.goalkeeperAnalysis(match).byGoalkeeper['Kari'];
+  assert.equal(gk.goalsConceded, 1);
+  const reconciliation = A.reconcileScoutingReport(match);
+  assert.equal(reconciliation.valid, true, JSON.stringify(reconciliation.mismatches));
+});
+
+test('CA scenario D: a counter-attack that wins a corner and then shoots keeps the shot on the counter-attacking side', () => {
+  const narrative = [
+    'Minute 36', 'Opportunity for Ravnogorac.', 'Midfield',
+    'Player A [CM] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Counter attack', 'Midfield',
+    'Gešević [DM] attempted low good pass to Kopranović [RM]',
+    'Player X [CB] got weak assistance, and was close.',
+    'Kopranović [RM] made excellent reception and took control of the ball.',
+    'Penalty Box',
+    'Kopranović [RM] attempted low decent pass to Løfsgaard [FW]',
+    'Player Y [CB] got good assistance, and was in decent position.',
+    'Løfsgaard [FW] made weak reception, Player Y [CB] made superb tackle.',
+    'Player Y [CB] sent ball to corner.',
+    'Corner',
+    'Kopranović [RM] made high decent pass to Løfsgaard [FW]',
+    'Player Y [CB] got weak assistance, and was close.',
+    'Løfsgaard [FW] made superb reception and took control of the ball.',
+    'Goal Attempt',
+    'Løfsgaard [FW] made excellent shot.',
+    'Kari [GK] was ready, and made excellent effort to prevent goal.',
+    'Kari [GK] managed to get hold of the ball.',
+    '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "36' - A - O_MID_START", "36' - A - V_PASS - (55)", "36' - H - V_ASSISTANCE - (40)", "36' - A - V_RECEPTION - (30)", "36' - H - V_TACKLING - (75)",
+    "36' - H - E_COUNTER_ATTACK",
+    "36' - H - V_PASS - (60)", "36' - A - V_ASSISTANCE - (35)", "36' - H - V_RECEPTION - (70)",
+    "36' - H - V_PASS - (50)", "36' - A - V_ASSISTANCE - (55)", "36' - H - V_RECEPTION - (35)", "36' - A - V_TACKLING - (65)",
+    "36' - H - V_PASS - (65)", "36' - A - V_ASSISTANCE - (40)", "36' - H - V_RECEPTION - (80)",
+    "36' - H - V_SHOT - (85)", "36' - A - V_REFLEX - (60)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, CA_TEAMS);
+  const funnel = A.opportunityFunnel(match);
+  assert.equal(funnel.home.shotAttempts, 1, "Medak's shot after winning their own corner is still Medak's");
+  assert.equal(funnel.away.shotAttempts, 0);
+  const termination = A.attackTermination(match);
+  assert.equal((termination.home.SHOT_SAVED || 0) + (termination.away.SHOT_SAVED || 0), 1);
+  assert.equal(termination.away.SHOT_SAVED || 0, 0, 'the save must not be filed under Ravnogorac');
+});
+
+test('CA scenario E: a counter-attack rebound produces two shot events, both correctly on the counter-attacking side', () => {
+  const narrative = [
+    'Minute 36', 'Opportunity for Ravnogorac.', 'Midfield',
+    'Player A [CM] attempted low good pass to Player B [CM]',
+    'Player C [DM] got weak assistance, and was close.',
+    'Player B [CM] made weak reception, Player C [DM] made superb tackle.',
+    'Player C [DM] cleared the ball to safety.',
+    'Counter attack', 'Midfield',
+    'Gešević [DM] attempted low good pass to Kopranović [RM]',
+    'Player X [CB] got weak assistance, and was close.',
+    'Kopranović [RM] made excellent reception and took control of the ball.',
+    'Penalty Box',
+    'Kopranović [RM] attempted low decent pass to Løfsgaard [FW]',
+    'Player Y [CB] got good assistance, and was in decent position.',
+    'Løfsgaard [FW] made weak reception, Player Y [CB] made superb tackle.',
+    'Løfsgaard [FW] took control of the ball.',
+    'Goal Attempt',
+    'Løfsgaard [FW] made decent shot.',
+    'Kari [GK] was hesitant, and made weak effort to prevent goal.',
+    'Kari [GK] failed to get a hold of the ball!',
+    'Kopranović [RM] was close and took control of the ball.',
+    'Goal Attempt',
+    'Kopranović [RM] made superb shot.',
+    'Kari [GK] was ready, and made excellent effort to prevent goal.',
+    'Kari [GK] managed to get hold of the ball.',
+    '[0-0]',
+  ].join('\n');
+  const telemetry = [
+    "36' - A - O_MID_START", "36' - A - V_PASS - (55)", "36' - H - V_ASSISTANCE - (40)", "36' - A - V_RECEPTION - (30)", "36' - H - V_TACKLING - (75)",
+    "36' - H - E_COUNTER_ATTACK",
+    "36' - H - V_PASS - (60)", "36' - A - V_ASSISTANCE - (35)", "36' - H - V_RECEPTION - (70)",
+    "36' - H - V_PASS - (50)", "36' - A - V_ASSISTANCE - (55)", "36' - H - V_RECEPTION - (35)", "36' - A - V_TACKLING - (65)",
+    "36' - H - V_SHOT - (55)", "36' - A - V_REFLEX - (30)",
+    "36' - H - V_SHOT - (90)", "36' - A - V_REFLEX - (75)",
+  ].join('\n');
+  const match = parseMatch(telemetry, narrative, CA_TEAMS);
+  const shots = A.collectShotEvents(match);
+  assert.equal(shots.length, 2);
+  assert.deepEqual(shots.map(s => s.attackingSide), ['home', 'home']);
+  assert.equal(A.opportunityFunnel(match).home.shotAttempts, 2);
+  assert.equal(A.opportunityFunnel(match).home.shots, 1, 'both shots came from the same attacking sequence');
+  const reconciliation = A.reconcileScoutingReport(match);
+  assert.equal(reconciliation.valid, true, JSON.stringify(reconciliation.mismatches));
+});
+
+test('CA scenario F: attackingSequencesFor never invents a switch back to the original side — a counter-attacked opportunity yields at most one pre-CA and one post-CA sequence', () => {
+  const match = parseMatch(caTelemetry(), caFixture(), CA_TEAMS);
+  const opp = match.opportunities[0];
+  const sequences = A.attackingSequencesFor(opp);
+  assert.equal(sequences.length, 2, 'exactly one pre-CA and one post-CA sequence, never a third "switch back"');
+  assert.equal(sequences[0].attackingSide, 'away');
+  assert.equal(sequences[0].isCounterAttack, false);
+  assert.equal(sequences[1].attackingSide, 'home');
+  assert.equal(sequences[1].isCounterAttack, true);
+  assert.ok(sequences[1].steps.every(s => s.isCA === true));
+  assert.ok(sequences[0].steps.every(s => s.isCA === false || s.isCA == null));
 });

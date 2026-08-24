@@ -277,6 +277,7 @@ function parseNarrative(narrativeText) {
       blockRecovery: null, blockRecoveryRole: null, looseBallResolution: null, yellowCard: null,
       shotType: null, shotAngle: null, missType: null, gkContextLines: [],
       passerUnderPressure: null, passContextLines: [],
+      positioning: null, gkPositioning: null,
       oneOnOne: false, isLongShot: false, isCA: inCA };
   };
 
@@ -416,9 +417,15 @@ function parseNarrative(narrativeText) {
       currentPhase.target     = player(m[5], m[6]); continue;
     }
 
-    // Assistance line (defender positioning)
-    if ((m = line.match(/^(.+?) \[([A-Z]+)\] got \w+ assistance, and was .+\.$/))) {
-      currentPhase.defender = player(m[1], m[2]); continue;
+    // Assistance line (defender positioning). The positioning phrase ("close", "ready",
+    // "in decent position", "in perfect position", "out of position") has no telemetry
+    // backing — unlike assistance itself (a V_ASSISTANCE number) it only exists in the
+    // narrative, so it must be captured here or it's lost. Per the manual, "close"/"out of
+    // position" mean no tackle attempt follows; the other three proceed to a control phase.
+    if ((m = line.match(/^(.+?) \[([A-Z]+)\] got \w+ assistance, and was (.+)\.$/))) {
+      currentPhase.defender = player(m[1], m[2]);
+      currentPhase.positioning = m[3];
+      continue;
     }
 
     // Offside trap: the defense line holds instead of engaging in a duel. A trap attempt
@@ -561,9 +568,15 @@ function parseNarrative(narrativeText) {
       continue;
     }
 
-    // GK save line
-    if ((m = line.match(/^(.+?) \[([A-Z]+)\] was .+?, and made \w+ effort to prevent goal\.$/))) {
+    // GK save line. The keeper's own positioning call ("in decent spot", "on the right
+    // spot", "hesitant", "totally in the wrong position", "ready") is the same "positioning
+    // before the control/reflex phase" mechanic as the outfield assistance line above, just
+    // worded differently for a GK — capture it the same way instead of discarding it.
+    // trim() because FinalWhistle's own generator sometimes emits a stray space before the
+    // comma ("...right spot , and made...").
+    if ((m = line.match(/^(.+?) \[([A-Z]+)\] was (.+?), and made \w+ effort to prevent goal\.$/))) {
       currentPhase.gkPlayer = player(m[1], m[2]);
+      currentPhase.gkPositioning = m[3].trim();
       if (!currentPhase.defender) currentPhase.defender = currentPhase.gkPlayer; continue;
     }
 
@@ -686,6 +699,7 @@ function passDuelShotSteps(mk, phase, sv, isPenalty, passStepType, duelStepType)
   steps.push(mk(duelStepType, {
     attacker:   phase.target,
     defender:   phase.defender,
+    positioning: phase.positioning || null,
     values:     { assistance: qv(sv.assistance ?? null),
                   reception:  qv(sv.reception   ?? null),
                   tackle:     qv(sv.tackle       ?? null) },
@@ -704,6 +718,7 @@ function passDuelShotSteps(mk, phase, sv, isPenalty, passStepType, duelStepType)
       // differ from whoever was actually fouled.
       shooter:    phase.shotTaker || phase.target,
       gk:         phase.gkPlayer,
+      gkPositioning: phase.gkPositioning || null,
       shotType:   phase.shotType,
       shotAngle:  phase.shotAngle,
       oneOnOne:   phase.oneOnOne,
@@ -757,6 +772,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
       steps.push(mk('MID_DUEL', {
         attacker:     phase.target || phase.passer,   // who received
         defender:     phase.defender,
+        positioning:  phase.positioning || null,
         values:       { assistance: qv(sv.assistance ?? null),
                         reception:  qv(sv.reception  ?? null),
                         tackle:     qv(sv.tackle      ?? null) },
@@ -773,6 +789,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
         steps.push(mk('SHOT', {
           shooter:    phase.shotTaker || phase.target || phase.passer,
           gk:         phase.gkPlayer,
+          gkPositioning: phase.gkPositioning || null,
           shotType:   phase.shotType,
           shotAngle:  phase.shotAngle,
           oneOnOne:   phase.oneOnOne,
@@ -794,6 +811,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
       steps.push(mk('DRIB', {
         dribbler:  phase.passer,
         defender:  phase.defender,
+        positioning: phase.positioning || null,
         values:    { assistance: qv(sv.assistance ?? null),
                      reception:  qv(sv.reception  ?? null),  // dribble quality
                      tackle:     qv(sv.tackle      ?? null) },
@@ -823,6 +841,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
         steps.push(mk('FK_SHOT', {
           shooter:    phase.passer,
           gk:         phase.gkPlayer,
+          gkPositioning: phase.gkPositioning || null,
           isLongShot: phase.isLongShot,
           shotType:   phase.shotType,
           values:     { shot: qv(sv.shot ?? null), gkSave: qv(sv.gkSave ?? null) },
@@ -845,6 +864,7 @@ function phaseToSteps(phase, streamValues, streamEvents) {
       steps.push(mk('SHOT', {
         shooter:    phase.shotTaker || phase.passer,
         gk:         phase.gkPlayer,
+        gkPositioning: phase.gkPositioning || null,
         shotType:   phase.shotType,
         shotAngle:  phase.shotAngle,
         oneOnOne:   phase.oneOnOne,

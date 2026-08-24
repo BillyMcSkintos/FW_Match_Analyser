@@ -100,19 +100,23 @@ function newDuelAgg() { return { attempts: 0, wins: 0, losses: 0 }; }
 // Opportunity funnel
 // ─────────────────────────────────────────────────────────────────────────────
 
-// OBSERVED/DERIVED. Classifies HOW an opportunity's attack was routed — deliberately
-// separate from `terminalStage` (WHERE it stopped) and from `isCounterAttack` (already
-// on the opportunity, carried through unchanged). Set pieces, direct free kicks and long
-// balls bypass the normal midfield/PB progression entirely, so lumping them into
-// "open play" would misrepresent how they actually started.
-function classifyProgressionType(opp) {
-  if (opp.isLongBallSequence) return 'LONG_BALL';
-  if (opp.startType === 'SP') return 'SET_PIECE';
-  if (opp.startType === 'FK') {
+// OBSERVED/DERIVED. Classifies HOW an attacking sequence was routed — deliberately
+// separate from `terminalStage` (WHERE it stopped) and from `isCounterAttack`. Set
+// pieces, direct free kicks and long balls bypass the normal midfield/PB progression
+// entirely, so lumping them into "open play" would misrepresent how they actually
+// started. A counter-attacking sequence gets its own honest category rather than
+// inheriting the PARENT opportunity's isLongBallSequence/startType — those describe how
+// the OTHER team's attack began, not how this sequence did; the parser has no separate
+// "how did the counter itself start" classification to borrow, so this doesn't invent one.
+function classifyProgressionType(seq) {
+  if (seq.isCounterAttack) return 'COUNTER_ATTACK';
+  if (seq.isLongBallSequence) return 'LONG_BALL';
+  if (seq.startType === 'SP') return 'SET_PIECE';
+  if (seq.startType === 'FK') {
     // A direct free-kick shot has no pass line at all (parser.js's phaseToSteps 'FK'
     // case only emits FK_SHOT, never FK_PASS, when phase.target is unset) — a delivered
     // free kick produces FK_PASS/FK_DUEL like a corner does.
-    return opp.steps.some(s => s.stepType === 'FK_SHOT') ? 'DIRECT_FREE_KICK' : 'SET_PIECE';
+    return seq.steps.some(s => s.stepType === 'FK_SHOT') ? 'DIRECT_FREE_KICK' : 'SET_PIECE';
   }
   return 'OPEN_PLAY'; // MID/PB/DEF starts
 }
@@ -124,8 +128,36 @@ function classifyProgressionType(opp) {
 // matching findFirstFailedDefensiveStage's explicit conservatism requirement below.
 function attackerWonDuel(step) { return step.outcome === 'WON' || step.outcome === 'POSSESSION'; }
 
-function buildFunnelEntry(opp) {
-  const steps = opp.steps;
+// ─────────────────────────────────────────────────────────────────────────────
+// Attacking sequences — the unit every team-attribution metric should actually use
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A parsed FW "opportunity" (the narrative's own "Opportunity for X" container) can
+// contain TWO attacking sequences when a counter-attack happens inside it: the original
+// team's sequence up to the CA boundary, and the counter-attacking team's sequence after
+// it — each belongs to a genuinely different attackingSide, per parser.js's own
+// step-level attackingSide/defendingSide stamping (the authoritative source for action
+// ownership post-CA — see assignSides). Every metric that describes "what did this
+// team's attack achieve" must be scoped to ONE sequence, never blended across both just
+// because they share one parent opportunity — that blending is the exact bug class this
+// function exists to close off. A non-CA opportunity is trivially its own single
+// sequence, so every existing single-sequence call site keeps working unchanged.
+function attackingSequencesFor(opp) {
+  const steps = opp.steps || [];
+  const base = { minute: opp.minute, sequence: opp.sequence, team: opp.team,
+    startType: opp.startType, isLongBallSequence: opp.isLongBallSequence };
+  if (!opp.isCounterAttack) return [{ ...base, steps, attackingSide: opp.teamSide, isCounterAttack: false }];
+  const pre = steps.filter(s => !s.isCA);
+  const post = steps.filter(s => s.isCA);
+  const sequences = [];
+  if (pre.length) sequences.push({ ...base, steps: pre, attackingSide: pre[0].attackingSide || opp.teamSide, isCounterAttack: false });
+  if (post.length) sequences.push({ ...base, steps: post, attackingSide: post[0].attackingSide || otherSide(opp.teamSide),
+    isCounterAttack: true, startType: null, isLongBallSequence: false });
+  return sequences;
+}
+
+function buildFunnelEntry(seq) {
+  const steps = seq.steps;
   const midDuel = steps.find(s => s.stepType === 'MID_DUEL');
   const pbSteps = steps.filter(s => s.stepType === 'PB_PASS' || s.stepType === 'PB_DUEL');
   const pbDuel  = steps.find(s => s.stepType === 'PB_DUEL');
@@ -147,28 +179,58 @@ function buildFunnelEntry(opp) {
   else terminalStage = 'SET_PIECE'; // e.g. a corner/FK delivery that never resolved into PB_DUEL
 
   return {
-    minute: opp.minute, sequence: opp.sequence, team: opp.team, teamSide: opp.teamSide,
-    progressionType: classifyProgressionType(opp),
-    isCounterAttack: !!opp.isCounterAttack,
+    minute: seq.minute, sequence: seq.sequence, team: seq.team, teamSide: seq.attackingSide,
+    progressionType: classifyProgressionType(seq),
+    isCounterAttack: !!seq.isCounterAttack,
     reachedMidfieldDuel, wonMidfieldDuel,
     reachedPenaltyBox, completedPenaltyBoxReception,
     shotCount, goalCount, terminalStage,
   };
 }
 
-// DERIVED. Per-opportunity funnel entries plus a per-side count summary — the summary
-// is exact arithmetic over the entries, nothing estimated.
+// DERIVED. One entry per ATTACKING SEQUENCE (see attackingSequencesFor — up to two per
+// FW opportunity when a counter-attack occurs), plus a per-side count summary that is
+// exact arithmetic over the entries, nothing estimated. `total` therefore counts
+// attacking sequences, not raw FW opportunities — a side that only ever appears via
+// counter-attacks still gets its own entries and its own honest total, instead of being
+// invisible because every parent opportunity nominally "belonged" to the other team.
 function opportunityFunnel(match) {
-  const entries = (match?.opportunities || []).map(buildFunnelEntry);
+  const entries = (match?.opportunities || []).flatMap(opp => attackingSequencesFor(opp).map(buildFunnelEntry));
+  // FW-opportunity count is deliberately a SEPARATE, simpler tally straight off
+  // match.opportunities (never through entries/sequences) — it answers "how many
+  // narrative Opportunity-for-X containers did this side open", which a counter-attack
+  // does not change, unlike every sequence-scoped figure below.
+  const fwOpportunityCounts = { home: 0, away: 0 };
+  for (const opp of (match?.opportunities || [])) if (fwOpportunityCounts[opp.teamSide] != null) fwOpportunityCounts[opp.teamSide]++;
+  // Shot/goal figures are sourced from collectShotEvents() — the SAME canonical list
+  // shotProfileAnalysis() reads — rather than re-derived from `entries`, so
+  // funnel.shotAttempts and Σ(shot profile attempts) agree by construction, not by
+  // coincidence. (They would in fact still agree even reading from `entries`, since a
+  // sequence's own steps all share one attackingSide by construction of
+  // attackingSequencesFor — but routing both through one shared list is the structural
+  // guarantee the project's reconciliation invariants can actually check.)
+  const shotEvents = collectShotEvents(match);
   const summarize = (side) => {
     const e = entries.filter(x => x.teamSide === side);
+    const shots = shotEvents.filter(s => s.attackingSide === side);
+    // Distinct denominators: "shots" is shot-producing SEQUENCES (how many separate
+    // attacking sequences — including a counter-attack's own sequence — got a shot away
+    // at all, counted from `entries` since it's a sequence-level fact); "shotAttempts"
+    // is the total number of individual shot EVENTS, which can exceed it — a rebound, a
+    // fumble recovery, or a set-piece continuation can all put more than one shot into a
+    // single sequence.
     return {
+      // "total" (and everything below it) counts ATTACKING SEQUENCES, not FW
+      // opportunities — see fwOpportunities for the narrative-container count, which a
+      // counter-attack does not add to or remove from for either side.
       total: e.length,
+      fwOpportunities: fwOpportunityCounts[side],
       reachedMidfield: e.filter(x => x.reachedMidfieldDuel).length,
       wonMidfield: e.filter(x => x.wonMidfieldDuel).length,
       reachedPenaltyBox: e.filter(x => x.reachedPenaltyBox).length,
       shots: e.filter(x => x.shotCount > 0).length,
-      goals: e.filter(x => x.goalCount > 0).length,
+      shotAttempts: shots.length,
+      goals: shots.filter(s => s.isGoal).length,
     };
   };
   return { entries, home: summarize('home'), away: summarize('away'), confidence: parserConfidence(match) };
@@ -226,6 +288,311 @@ function turnoverAnalysis(match) {
     });
   }
   return turnovers;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Duel matchups — player-vs-player, not just per-player totals
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Looks forward from a duel step, within the same CA-pool (mirrors viewer.js's
+// stepsToChain isCA-pool split — a counter-attack boundary changes who is attacking, so
+// a step before it must never be credited with a shot that only happened after it), for
+// the next shot-terminal step. Used to attribute "this specific matchup's win led to a
+// shot/goal" without assuming every win reaches one.
+function nextShotInPool(steps, step) {
+  const pool = step.isCA ? steps.filter(s => s.isCA) : steps.filter(s => !s.isCA);
+  const from = pool.indexOf(step);
+  if (from === -1) return null;
+  return pool.slice(from + 1).find(s => SHOT_STEP_TYPES.includes(s.stepType)) || null;
+}
+
+// DERIVED. One entry per (attacker, defender, zone) pair actually observed contesting a
+// duel — not every theoretical 1v1. Zone reuses ZONE_OF_STEP_TYPE (DRIB falls under
+// MIDFIELD, matching where parser.js only ever creates a DRIB phase). The step's own
+// recorded outcome (attackerWonDuel) is the only signal used to decide a winner — never
+// a raw reception/tackle value comparison, per this file's existing convention.
+// avgDefensiveValue averages whichever defensive number actually applied to that
+// specific contest (a completed tackle if the control phase was reached, otherwise the
+// assistance that let the defender contest positioning at all) rather than blurring the
+// two different phases of a duel together.
+function duelMatchups(match) {
+  const byKey = new Map();
+  const ensure = (attacker, attackerSide, defender, defenderSide, zone) => {
+    if (!attacker?.name || !defender?.name || !zone) return null;
+    const key = `${attacker.name}|${defender.name}|${zone}`;
+    if (!byKey.has(key)) byKey.set(key, {
+      attacker: attacker.name, attackerPosition: attacker.position || null, attackerSide,
+      defender: defender.name, defenderPosition: defender.position || null, defenderSide,
+      zone, contests: 0, attackerWins: 0, defenderWins: 0,
+      shotsAfterAttackerWin: 0, goalsAfterAttackerWin: 0,
+      receptionValues: newValueAgg(), defensiveValues: newValueAgg(),
+    });
+    return byKey.get(key);
+  };
+
+  for (const opp of (match?.opportunities || [])) {
+    const steps = opp.steps || [];
+    for (const step of steps) {
+      if (!DUEL_STEP_TYPES.includes(step.stepType)) continue;
+      const zone = ZONE_OF_STEP_TYPE[step.stepType] || (step.stepType === 'DRIB' ? 'MIDFIELD' : null);
+      const attacker = step.attacker || step.dribbler;
+      const rec = ensure(attacker, step.attackingSide, step.defender, step.defendingSide, zone);
+      if (!rec) continue;
+      rec.contests++;
+      addValue(rec.receptionValues, step.values?.reception);
+      addValue(rec.defensiveValues, step.values?.tackle ?? step.values?.assistance);
+      if (attackerWonDuel(step)) {
+        rec.attackerWins++;
+        const shot = nextShotInPool(steps, step);
+        if (shot) { rec.shotsAfterAttackerWin++; if (shot.outcome === 'GOAL') rec.goalsAfterAttackerWin++; }
+      } else {
+        rec.defenderWins++;
+      }
+    }
+  }
+
+  return [...byKey.values()].map(rec => {
+    const { receptionValues, defensiveValues, ...rest } = rec;
+    return {
+      ...rest,
+      attackerWinRate: rec.contests ? round2(rec.attackerWins / rec.contests) : null,
+      avgReceptionValue: finalizeValueAgg(receptionValues).avg,
+      avgDefensiveValue: finalizeValueAgg(defensiveValues).avg,
+    };
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Penalty-box target / defender analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DERIVED, PB_DUEL steps only. Distinguishes "reached the penalty box" (opportunityFunnel)
+// from what happened to the specific player who actually contested the ball there — a
+// team can reach the PB often while one target keeps losing the decisive duel, which the
+// funnel alone cannot show. shots/goals look forward to the next shot in the same
+// opportunity (see nextShotInPool); "corners generated" is the only "what did this
+// contest lead to" signal reported besides that — a rebound's true beneficiary is
+// ambiguous between the original attacker, the PB duel, and whoever recovers the loose
+// ball, so it is deliberately not attributed here (see the final report for why).
+function pbTargetAnalysis(match) {
+  const byPlayer = new Map();
+  const ensure = (p, side) => {
+    if (!p?.name) return null;
+    if (!byPlayer.has(p.name)) byPlayer.set(p.name, {
+      player: p.name, position: p.position || null, side,
+      pbContests: 0, won: 0, lost: 0, shots: 0, goals: 0, cornersGenerated: 0,
+      defendersFaced: {},
+    });
+    return byPlayer.get(p.name);
+  };
+
+  for (const opp of (match?.opportunities || [])) {
+    const steps = opp.steps || [];
+    for (const step of steps) {
+      if (step.stepType !== 'PB_DUEL') continue;
+      const rec = ensure(step.attacker, step.attackingSide);
+      if (!rec) continue;
+      rec.pbContests++;
+      if (attackerWonDuel(step)) rec.won++; else rec.lost++;
+      if (step.defender?.name) rec.defendersFaced[step.defender.name] = (rec.defendersFaced[step.defender.name] || 0) + 1;
+      if (step.outcome === 'CORNER') rec.cornersGenerated++;
+      const shot = nextShotInPool(steps, step);
+      if (shot) { rec.shots++; if (shot.outcome === 'GOAL') rec.goals++; }
+    }
+  }
+
+  return [...byPlayer.values()].map(rec => {
+    const { defendersFaced, ...rest } = rec;
+    const main = Object.entries(defendersFaced).sort((a, b) => b[1] - a[1])[0];
+    return { ...rest, mainDefender: main ? { name: main[0], contests: main[1] } : null };
+  });
+}
+
+// DERIVED, PB_DUEL steps only — the defensive inverse of pbTargetAnalysis. Never labels
+// a defender "weak"; only reports the observed contest/loss/shots-allowed counts.
+function pbDefenderAnalysis(match) {
+  const byPlayer = new Map();
+  const ensure = (p, side) => {
+    if (!p?.name) return null;
+    if (!byPlayer.has(p.name)) byPlayer.set(p.name, {
+      player: p.name, position: p.position || null, side,
+      contests: 0, won: 0, lost: 0, shotsAllowedAfterLoss: 0, goalsAllowedAfterLoss: 0,
+      opponentsFaced: {}, defensiveValues: newValueAgg(),
+    });
+    return byPlayer.get(p.name);
+  };
+
+  for (const opp of (match?.opportunities || [])) {
+    const steps = opp.steps || [];
+    for (const step of steps) {
+      if (step.stepType !== 'PB_DUEL') continue;
+      const rec = ensure(step.defender, step.defendingSide);
+      if (!rec) continue;
+      rec.contests++;
+      addValue(rec.defensiveValues, step.values?.tackle ?? step.values?.assistance);
+      const attacker = step.attacker;
+      if (attacker?.name) rec.opponentsFaced[attacker.name] = (rec.opponentsFaced[attacker.name] || 0) + 1;
+      if (attackerWonDuel(step)) {
+        rec.lost++;
+        const shot = nextShotInPool(steps, step);
+        if (shot) { rec.shotsAllowedAfterLoss++; if (shot.outcome === 'GOAL') rec.goalsAllowedAfterLoss++; }
+      } else {
+        rec.won++;
+      }
+    }
+  }
+
+  return [...byPlayer.values()].map(rec => {
+    const { opponentsFaced, defensiveValues, ...rest } = rec;
+    const main = Object.entries(opponentsFaced).sort((a, b) => b[1] - a[1])[0];
+    return { ...rest, avgDefensiveValue: finalizeValueAgg(defensiveValues).avg,
+      mainOpponent: main ? { name: main[0], contests: main[1] } : null };
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attacking routes — repeated contiguous player-progression chains
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Builds ONE contiguous chain of touches from a single-side step pool: starts at the
+// first pass's sender, and only extends the chain while each next pass's sender is
+// literally the player the chain already ended on — a pass from someone else (a
+// recovered turnover, a different phase's target) breaks the chain rather than joining
+// two unrelated actions just because they occurred in the same opportunity. Appends the
+// eventual shooter if a shot followed and they aren't already the chain's last node.
+function buildRouteForPool(pool) {
+  const passes = pool.filter(s => PASS_STEP_KINDS.includes(s.stepType) && s.from?.name && s.to?.name);
+  const shot = pool.find(s => SHOT_STEP_TYPES.includes(s.stepType));
+  if (!passes.length) {
+    // No delivery at all: a direct free-kick shot, or a shot straight off a dribble —
+    // still a one-node "route" for whoever it was, not "no route".
+    const solo = shot?.shooter || pool.find(s => s.stepType === 'DRIB')?.dribbler;
+    return solo?.name ? [solo] : [];
+  }
+  const nodes = [passes[0].from];
+  for (const p of passes) {
+    if (p.from.name !== nodes[nodes.length - 1]?.name) break;
+    nodes.push(p.to);
+  }
+  if (shot?.shooter?.name && shot.shooter.name !== nodes[nodes.length - 1]?.name) nodes.push(shot.shooter);
+  return nodes;
+}
+
+function routeKey(nodes) { return nodes.map(n => `${n.name}[${n.position || '?'}]`).join(' → '); }
+
+// DERIVED. Pre-CA and post-CA steps are built as two separate routes — a counter-attack
+// boundary is a change of who is attacking, not a continuation of the same team's route
+// (the same convention viewer.js's stepsToChain already applies via its isCA pool split).
+function attackingRoutes(match) {
+  const byKey = new Map();
+  for (const opp of (match?.opportunities || [])) {
+    const steps = opp.steps || [];
+    const pools = opp.isCounterAttack ? [steps.filter(s => !s.isCA), steps.filter(s => s.isCA)] : [steps];
+    for (const pool of pools) {
+      if (!pool.length) continue;
+      const nodes = buildRouteForPool(pool);
+      if (nodes.length < 2) continue; // a single touch is not a "route"
+      const key = routeKey(nodes);
+      if (!byKey.has(key)) byKey.set(key, {
+        chain: nodes.map(n => ({ name: n.name, position: n.position || null })),
+        side: pool[0]?.attackingSide || null,
+        occurrences: 0, pbEntries: 0, shots: 0, goals: 0,
+      });
+      const rec = byKey.get(key);
+      rec.occurrences++;
+      if (pool.some(s => s.stepType === 'PB_PASS' || s.stepType === 'PB_DUEL')) rec.pbEntries++;
+      const shotStep = pool.find(s => SHOT_STEP_TYPES.includes(s.stepType));
+      if (shotStep) { rec.shots++; if (shotStep.outcome === 'GOAL') rec.goals++; }
+    }
+  }
+  return [...byKey.values()].sort((a, b) => b.occurrences - a.occurrences);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attack termination — where opportunities actually ended
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DERIVED, from each opportunity's own already-deduplicated finalOutcome (parser.js
+// resolves a corner/rebound continuation down to the ONE outcome that actually ended the
+// whole opportunity — see parser.js's TERMINAL_OUTCOMES) — never re-derives a category
+// from individual step outcomes, which would risk double-counting a continuation (e.g. a
+// corner won, then eventually saved) as two separate endings.
+function classifyAttackTermination(opp) {
+  const finalStep = opp.steps[opp.steps.length - 1];
+  const outcome = opp.finalOutcome;
+  const zone = finalStep ? (ZONE_OF_STEP_TYPE[finalStep.stepType] || null) : null;
+  if (outcome === 'GOAL') return 'GOAL';
+  if (outcome === 'SAVED') return 'SHOT_SAVED';
+  if (outcome === 'FUMBLED') return 'SHOT_FUMBLED';
+  if (outcome === 'POST' || outcome === 'MISSED') return 'SHOT_MISSED';
+  if (outcome === 'SHOT_BLOCKED') return 'SHOT_BLOCKED';
+  if (outcome === 'GK_INTERCEPT') return 'GK_INTERCEPTION';
+  if (outcome === 'OFFSIDE') return 'OFFSIDE';
+  if (outcome === 'CORNER') return 'SET_PIECE_CONTINUATION';
+  if (outcome === 'FOUL') return 'FOUL_AWARDED';
+  if (outcome === 'CLEARED' || outcome === 'BLOCKED') {
+    if (zone === 'PENALTY_BOX') return outcome === 'BLOCKED' ? 'PB_DELIVERY_BLOCKED' : 'PB_LOSS';
+    if (zone === 'SET_PIECE') return 'SET_PIECE_LOSS';
+    return 'MIDFIELD_LOSS';
+  }
+  return 'OTHER_UNKNOWN';
+}
+
+function attackTermination(match) {
+  const counts = { home: {}, away: {} };
+  for (const opp of (match?.opportunities || [])) {
+    const finalStep = opp.steps[opp.steps.length - 1];
+    // The side that actually ended the opportunity — the final STEP's own
+    // attackingSide, not the parent opportunity's nominal owner. A counter-attack that
+    // ends the opportunity (e.g. its shot is saved) must be filed under the
+    // counter-attacking side, exactly like every other step-level attribution in this
+    // file; opp.teamSide is only the fallback for the (non-CA) common case.
+    const side = finalStep?.attackingSide || opp.teamSide;
+    if (!counts[side]) continue;
+    const cat = classifyAttackTermination(opp);
+    counts[side][cat] = (counts[side][cat] || 0) + 1;
+  }
+  return counts;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Defensive exposure — defensiveFailureChains(), promoted to a per-defender view
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DERIVED, aggregating defensiveFailureChains() per defender — no new judgment beyond
+// what that function already computes. "Involved" counts any shot chain where this
+// player appears as A defender at some stage; "firstFailedDefensiveStageCount" counts
+// only chains where THEY were specifically the duel the attacker won outright
+// (findFirstFailedDefensiveStage's own conservative definition, unchanged). Deliberately
+// not phrased as "responsible for" — see this file's own note field convention.
+function defensiveExposure(match) {
+  const byPlayer = new Map();
+  const ensure = (name, position, side) => {
+    if (!name) return null;
+    if (!byPlayer.has(name)) byPlayer.set(name, {
+      player: name, position: position || null, side,
+      shotChainsInvolvedIn: 0, firstFailedDefensiveStageCount: 0,
+      shotsFollowingLoss: 0, goalsFollowingLoss: 0,
+    });
+    return byPlayer.get(name);
+  };
+  for (const chain of defensiveFailureChains(match)) {
+    const seen = new Set();
+    for (const stage of chain.stages) {
+      if (stage.defender?.name && !seen.has(stage.defender.name)) {
+        seen.add(stage.defender.name);
+        ensure(stage.defender.name, stage.defender.position, chain.defendingSide).shotChainsInvolvedIn++;
+      }
+    }
+    const failed = chain.firstFailedDefensiveStage;
+    if (failed?.defender?.name) {
+      const rec = ensure(failed.defender.name, failed.defender.position, chain.defendingSide);
+      rec.firstFailedDefensiveStageCount++;
+      rec.shotsFollowingLoss++;
+      if (chain.gkOutcome === 'GOAL') rec.goalsFollowingLoss++;
+    }
+  }
+  return [...byPlayer.values()];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -572,6 +939,14 @@ function playerStatistics(match) {
       interceptions: 0, blocks: 0,
       tackles: 0, passes: 0, completedPasses: 0, passCompletionPct: null,
       assists: 0, shots: 0, shotsOnTarget: 0, goals: 0, fouls: 0,
+      // Duels competed in as EITHER attacker/dribbler or defender, combined into one
+      // per-player count, per the manual's two-phase model: Position (won on OP vs DP
+      // alone, no tackle attempted), Control (a tackle was contested and the attacker
+      // kept the ball), Tackle (a tackle was contested and the defender won it). DRIB is
+      // included — a dribble is mechanically the same 1v1 contest as a duel, just with
+      // the ball carrier attempting to run past rather than receive a pass (see
+      // DUEL_STEP_TYPES above, which already groups DRIB with the other duel types).
+      duelsPlayed: 0, duelsWonPosition: 0, duelsWonControl: 0, duelsWonTackle: 0,
       tiredMinutes: [], veryTiredMinutes: [], yellowCards: [], injuries: [],
       substitutedInMinute: null, substitutedOutMinute: null,
       replacedPlayer: null, replacedByPlayer: null,
@@ -623,6 +998,23 @@ function playerStatistics(match) {
           team: step.attackingTeam, side: step.attackingSide } : null;
       }
       if (DUEL_STEP_TYPES.includes(step.stepType)) {
+        const hasTackle = step.values?.tackle?.value != null;
+        const attackerWon = attackerWonDuel(step);
+        const offPlayer = step.attacker || step.dribbler;
+        if (offPlayer) {
+          const off = ensure(offPlayer, step.attackingTeam, step.attackingSide);
+          if (off) {
+            off.duelsPlayed++;
+            if (attackerWon) { if (hasTackle) off.duelsWonControl++; else off.duelsWonPosition++; }
+          }
+        }
+        if (step.defender) {
+          const def = ensure(step.defender, step.defendingTeam, step.defendingSide);
+          if (def) {
+            def.duelsPlayed++;
+            if (hasTackle && !attackerWon) def.duelsWonTackle++;
+          }
+        }
         if (step.defender && step.values?.tackle?.value != null) {
           const defender = ensure(step.defender, step.defendingTeam, step.defendingSide);
           if (defender) defender.tackles++;
@@ -844,11 +1236,20 @@ function fatigueImpact(match) {
 
     const before = duelSummaryForPlayer(match, name, m => m < firstMinute);
     const after  = duelSummaryForPlayer(match, name, m => m >= firstMinute && (subMinute == null || m < subMinute));
+    // VERY_TIRED is just another reported level in the same stream — not a separate
+    // event source — so it's picked out of the already-sorted reports rather than
+    // tracked as its own thing during collection.
+    const veryTired = info.reports.find(r => r.level === 'VERY_TIRED');
+    const veryTiredMinute = veryTired ? veryTired.minute : null;
 
     results.push({
       player: info.player, team: info.team, side: info.side,
       firstTiredMinute: firstMinute, firstTiredLevel: info.reports[0].level,
+      firstVeryTiredMinute: veryTiredMinute,
       allReports: info.reports, substitutedAtMinute: subMinute,
+      minutesFromFirstTiredToSub: subMinute != null ? subMinute - firstMinute : null,
+      minutesFromFirstVeryTiredToSub: (subMinute != null && veryTiredMinute != null) ? subMinute - veryTiredMinute : null,
+      remainedOnPitch: subMinute == null,
       before, after,
       sampleSizeHint: { before: sampleSizeHint(before.defensiveDuels + before.attackingDuels),
                          after: sampleSizeHint(after.defensiveDuels + after.attackingDuels) },
@@ -977,31 +1378,75 @@ function setPieceAnalysis(match) {
 // Goalkeeper analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
-// OBSERVED/DERIVED, from shot outcomes only. Never reverse-engineers RE/GP/IN/CT/OR
-// skill values or an arrow setting from the shot types faced — the `note` field makes
-// that boundary explicit.
+// OBSERVED/DERIVED, built from collectShotEvents() (the same canonical list
+// shotProfileAnalysis/opportunityFunnel read) rather than a third independent walk over
+// opp.steps. Never reverse-engineers RE/GP/IN/CT/OR skill values or an arrow setting
+// from the shot types faced — the `note` field makes that boundary explicit.
+//
+// Exact field definitions (per shot event naming this GK, regardless of outcome):
+//   shotsFaced       — every shot event naming this GK. INCLUDES off-target/blocked
+//                      attempts (MISSED/POST/SHOT_BLOCKED) whenever the narrative still
+//                      named a keeper for that attempt — it is not "on-target shots".
+//   onTarget         — the subset that required an actual goalkeeping response: GOAL +
+//                      SAVED + FUMBLED. shotsFaced - onTarget - interceptions is not a
+//                      meaningful identity (interceptions never come from a SHOT step at
+//                      all — see below); use offTargetOrBlocked for the off-target count.
+//   offTargetOrBlocked — MISSED + POST + SHOT_BLOCKED: the ball never reached/beat the
+//                      keeper in a way that needed a save attempt.
+//   saves            — SAVED only: a controlled save (onTarget subset).
+//   fumbles          — FUMBLED only: an uncontrolled save (onTarget subset). Mutually
+//                      exclusive with saves per shot event — a fumble is never also
+//                      counted as a save on the SAME event; a genuine rebound shot is a
+//                      separate SHOT step (parser.js splits it out), so it correctly
+//                      increments shotsFaced again rather than double-counting one event.
+//   goalsConceded    — GOAL only (onTarget subset).
+//   interceptions    — from a GK_INTERCEPT outcome on a DUEL-type step, never a SHOT
+//                      step at all: a GK interception is not a shot faced and is not
+//                      counted in shotsFaced/onTarget/offTargetOrBlocked.
+//   unresolved       — a shot event whose outcome never resolved to one of the above (an
+//                      in-progress match, or a scrape cut off before the shot's
+//                      resolution line was captured). Counted in shotsFaced but
+//                      deliberately NOT folded into onTarget or offTargetOrBlocked —
+//                      guessing which one it "would have been" isn't supported by the
+//                      data. shotsFaced === onTarget + offTargetOrBlocked + unresolved
+//                      always holds by construction (see reconcileScoutingReport).
+//                      cornersConceded is retained for shape compatibility but is
+//                      currently unreachable — 'CORNER' has never been a valid SHOT-step
+//                      outcome (see parser.js's SHOT_TERMINALS); a shot deflecting behind
+//                      for a corner is recorded as the DUEL step's own CORNER outcome,
+//                      not this shot event's.
 function goalkeeperAnalysis(match) {
   const byGK = {};
   const ensure = (p, team, side) => {
     if (!p?.name) return null;
     if (!byGK[p.name]) byGK[p.name] = { name: p.name, team: team || null, side: side || null,
-      shotsFaced: 0, saves: 0, goalsConceded: 0, fumbles: 0, cornersConceded: 0,
+      shotsFaced: 0, onTarget: 0, offTargetOrBlocked: 0, unresolved: 0,
+      saves: 0, goalsConceded: 0, fumbles: 0, cornersConceded: 0,
       interceptions: 0, saveValues: newValueAgg() };
     return byGK[p.name];
   };
+  for (const ev of collectShotEvents(match)) {
+    if (!ev.gk?.name) continue;
+    const rec = ensure(ev.gk, ev.defendingTeam, ev.defendingSide);
+    if (!rec) continue;
+    rec.shotsFaced++;
+    if (ev.isGoal) { rec.goalsConceded++; rec.onTarget++; }
+    else if (ev.isSaved) { rec.saves++; rec.onTarget++; }
+    else if (ev.isFumbled) { rec.fumbles++; rec.onTarget++; }
+    // CORNER is not currently a reachable SHOT-step outcome (see SHOT_TERMINALS in
+    // parser.js), but is still folded into offTargetOrBlocked defensively — a shot
+    // deflected behind for a corner never beat/required a save decision, so it belongs
+    // in the same bucket as MISSED/POST/SHOT_BLOCKED. Leaving this branch to fall through
+    // to `unresolved` (as it did previously) would silently break the
+    // shotsFaced === onTarget + offTargetOrBlocked + unresolved invariant if the parser
+    // ever started emitting it.
+    else if (ev.result === 'CORNER') { rec.cornersConceded++; rec.offTargetOrBlocked++; }
+    else if (ev.isMissed || ev.isBlocked) rec.offTargetOrBlocked++;
+    else rec.unresolved++;
+    if (ev.gkSaveValue != null) rec.saveValues.values.push(ev.gkSaveValue);
+  }
   for (const opp of (match?.opportunities || [])) {
     for (const step of opp.steps) {
-      if (SHOT_STEP_TYPES.includes(step.stepType) && step.gk) {
-        const rec = ensure(step.gk, step.defendingTeam, step.defendingSide);
-        if (rec) {
-          rec.shotsFaced++;
-          if (step.outcome === 'SAVED') rec.saves++;
-          else if (step.outcome === 'GOAL') rec.goalsConceded++;
-          else if (step.outcome === 'FUMBLED') rec.fumbles++;
-          else if (step.outcome === 'CORNER') rec.cornersConceded++;
-          addValue(rec.saveValues, step.values?.gkSave);
-        }
-      }
       if (step.outcome === 'GK_INTERCEPT' && step.defender) {
         const rec = ensure(step.defender, step.defendingTeam, step.defendingSide);
         if (rec) rec.interceptions++;
@@ -1019,36 +1464,78 @@ function goalkeeperAnalysis(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shot profile analysis
+// Canonical shot events — the ONE place shot steps are walked; every shot-derived
+// metric (funnel shot/goal counts, shot profile, GK shots-faced) must read from this
+// list rather than independently re-deriving its own count, so they cannot disagree.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Distinct from viewer.js's classifyShotType (that one is DOM-adjacent code in the
-// stats-panel section) — this file cannot depend on viewer.js, so the same small
-// classification is reimplemented here from the identical step fields.
-function classifyShotTypeForAnalytics(step) {
+// Technique (how it was hit) kept deliberately separate from origin/delivery context
+// (isDirectFreeKick, isPenalty) — forcing both into one bucket loses information: a
+// direct free kick that FinalWhistle also narrates as "Long Shot Goal Attempt" is BOTH
+// a long shot AND a direct free kick, not one or the other. Only uses distinctions the
+// parser/narrative actually identified (step.shotType, step.isLongShot, stepType) — an
+// observed shot type is not treated as proof a specific Player Order was configured.
+function shotTechnique(step) {
   if (step.isPenalty) return 'penalty';
   if (step.isLongShot) return 'long shot';
-  if (step.stepType === 'FK_SHOT') return 'direct free kick';
   return (step.shotType || 'normal').toLowerCase();
 }
 
-// OBSERVED/DERIVED. Only uses shot types the parser/narrative actually identified — an
-// observed shot type (e.g. a lob shot) is not treated as proof a specific Player Order
-// was configured: FinalWhistle report text does not establish that equivalence.
+// DERIVED. attackingSide/defendingSide come from the STEP itself (falling back to the
+// parent opportunity only when a step somehow lacks its own — parser.js always sets
+// it, so this is defensive, not the primary path) — a counter-attack's shot belongs to
+// the counter-attacking side, never to the parent opportunity's nominal owner.
+function collectShotEvents(match) {
+  const events = [];
+  for (const opp of (match?.opportunities || [])) {
+    opp.steps.forEach((step, stepIndex) => {
+      if (!SHOT_STEP_TYPES.includes(step.stepType)) return;
+      const attackingSide = step.attackingSide || opp.teamSide;
+      events.push({
+        minute: opp.minute, sequence: opp.sequence, stepIndex,
+        attackingSide, defendingSide: step.defendingSide || otherSide(attackingSide),
+        attackingTeam: step.attackingTeam || null, defendingTeam: step.defendingTeam || null,
+        player: step.shooter || null, gk: step.gk || null,
+        technique: shotTechnique(step),
+        isDirectFreeKick: step.stepType === 'FK_SHOT',
+        isPenalty: !!step.isPenalty,
+        shotValue: step.values?.shot?.value ?? null,
+        gkSaveValue: step.values?.gkSave?.value ?? null,
+        result: step.outcome || null,
+        isGoal: step.outcome === 'GOAL',
+        isSaved: step.outcome === 'SAVED',
+        isFumbled: step.outcome === 'FUMBLED',
+        isBlocked: step.outcome === 'SHOT_BLOCKED',
+        isMissed: step.outcome === 'MISSED' || step.outcome === 'POST',
+        isCounterAttack: !!step.isCA,
+      });
+    });
+  }
+  return events;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shot profile analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+// OBSERVED/DERIVED, built from collectShotEvents() — the profile's own attempt totals
+// therefore always sum to exactly the number of canonical shot events for that side, by
+// construction, rather than risking a second independent walk drifting from the first.
+// A direct free kick that is ALSO a long shot gets its own combined bucket label
+// ("long shot (direct free kick)") instead of silently collapsing into just one of the
+// two dimensions.
 function shotProfileAnalysis(match) {
   const byType = { home: {}, away: {} };
-  for (const opp of (match?.opportunities || [])) {
-    for (const step of opp.steps) {
-      if (!SHOT_STEP_TYPES.includes(step.stepType)) continue;
-      const side = step.attackingSide || opp.teamSide;
-      const type = classifyShotTypeForAnalytics(step);
-      if (!byType[side][type]) byType[side][type] = { attempts: 0, goals: 0, shotValues: newValueAgg(), gkValues: newValueAgg() };
-      const rec = byType[side][type];
-      rec.attempts++;
-      if (step.outcome === 'GOAL') rec.goals++;
-      addValue(rec.shotValues, step.values?.shot);
-      addValue(rec.gkValues, step.values?.gkSave);
-    }
+  for (const ev of collectShotEvents(match)) {
+    const bucket = byType[ev.attackingSide];
+    if (!bucket) continue;
+    const type = ev.isDirectFreeKick && ev.technique !== 'penalty' ? `${ev.technique} (direct free kick)` : ev.technique;
+    if (!bucket[type]) bucket[type] = { attempts: 0, goals: 0, shotValues: newValueAgg(), gkValues: newValueAgg() };
+    const rec = bucket[type];
+    rec.attempts++;
+    if (ev.isGoal) rec.goals++;
+    if (ev.shotValue != null) rec.shotValues.values.push(ev.shotValue);
+    if (ev.gkSaveValue != null) rec.gkValues.values.push(ev.gkSaveValue);
   }
   for (const side of ['home', 'away']) {
     for (const type of Object.keys(byType[side])) {
@@ -1118,7 +1605,8 @@ function bumpInvolvement(obj, name, team, side) {
 // verdict anywhere in this function; a caller pairing these counts with outcome data to
 // form a judgment is doing that interpretation itself, not reading it off here.
 function playerInvolvementChains(match) {
-  const starts = {}, progressors = {}, pbReceivers = {}, terminators = {}, shotChainDefenders = {};
+  const starts = {}, progressors = {}, pbReceivers = {}, pbSuppliers = {}, shotTakers = {},
+        terminators = {}, shotChainDefenders = {};
   for (const opp of (match?.opportunities || [])) {
     const first = opp.steps[0];
     if (first) {
@@ -1128,6 +1616,8 @@ function playerInvolvementChains(match) {
     for (const step of opp.steps) {
       if (PASS_STEP_KINDS.includes(step.stepType) && step.to) bumpInvolvement(progressors, step.to.name, step.attackingTeam, step.attackingSide);
       if (step.stepType === 'PB_PASS' && step.to) bumpInvolvement(pbReceivers, step.to.name, step.attackingTeam, step.attackingSide);
+      if (step.stepType === 'PB_PASS' && step.from) bumpInvolvement(pbSuppliers, step.from.name, step.attackingTeam, step.attackingSide);
+      if (SHOT_STEP_TYPES.includes(step.stepType) && step.shooter) bumpInvolvement(shotTakers, step.shooter.name, step.attackingTeam, step.attackingSide);
     }
     const last = opp.steps[opp.steps.length - 1];
     if (last) {
@@ -1140,8 +1630,79 @@ function playerInvolvementChains(match) {
       if (stage.defender?.name) bumpInvolvement(shotChainDefenders, stage.defender.name, null, chain.defendingSide);
     }
   }
-  return { starts, progressors, pbReceivers, terminators, shotChainDefenders,
+  return { starts, progressors, pbReceivers, pbSuppliers, shotTakers, terminators, shotChainDefenders,
     note: 'Counts and outcome rates only — high involvement is not itself a best/worst judgment.' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reconciliation invariants — development/test-only. Not surfaced in the normal
+// Scouting Report; call this from a test or a manual debugging session when you need to
+// verify that the headline numbers, shot profile, GK stats, and PB tables all agree with
+// each other and with the canonical shot-event list. Where two analytics deliberately
+// use a different scope (e.g. "shot-producing sequences" vs "total shot attempts"), that
+// difference is a separate, explicitly named check rather than a forced equality.
+// ─────────────────────────────────────────────────────────────────────────────
+function reconcileScoutingReport(match) {
+  const checks = [];
+  const record = (name, ok, detail) => checks.push({ name, ok, detail });
+
+  const shotEvents = collectShotEvents(match);
+  const funnel = opportunityFunnel(match);
+  const shotProfile = shotProfileAnalysis(match);
+  const gkAnalysis = goalkeeperAnalysis(match);
+  const targets = pbTargetAnalysis(match);
+  const defenders = pbDefenderAnalysis(match);
+  const matchups = duelMatchups(match);
+
+  for (const side of ['home', 'away']) {
+    const canonicalCount = shotEvents.filter(s => s.attackingSide === side).length;
+    record(`funnel.shotAttempts === canonical shot count (${side})`,
+      funnel[side].shotAttempts === canonicalCount,
+      { funnelShotAttempts: funnel[side].shotAttempts, canonicalCount });
+
+    const profileSum = Object.values(shotProfile[side]).reduce((n, r) => n + r.attempts, 0);
+    record(`sum(shot profile attempts) === canonical shot count (${side})`,
+      profileSum === canonicalCount,
+      { profileSum, canonicalCount });
+
+    const canonicalGoals = shotEvents.filter(s => s.attackingSide === side && s.isGoal).length;
+    record(`funnel.goals (shot-producing-sequence count) === canonical goal-event count (${side})`,
+      funnel[side].goals === canonicalGoals,
+      { funnelGoals: funnel[side].goals, canonicalGoals,
+        note: 'Different scopes that should still coincide in practice: funnel.goals counts SEQUENCES containing >=1 goal, canonicalGoals counts individual goal EVENTS — a goal is always terminal (parser.js TERMINAL_OUTCOMES), so one sequence cannot contain more than one, and the two numbers should always match.' });
+
+    const defended = shotEvents.filter(s => s.defendingSide === side).length;
+    const gkRecords = Object.values(gkAnalysis.byGoalkeeper).filter(g => g.side === side);
+    const gkTotal = gkRecords.reduce((n, g) => n + g.shotsFaced, 0);
+    record(`sum(GK shotsFaced) === shots defended (${side})`, gkTotal === defended, { gkTotal, defended });
+    for (const gk of gkRecords) {
+      record(`GK ${gk.name}: shotsFaced === onTarget + offTargetOrBlocked + unresolved`,
+        gk.shotsFaced === gk.onTarget + gk.offTargetOrBlocked + gk.unresolved,
+        { shotsFaced: gk.shotsFaced, onTarget: gk.onTarget, offTargetOrBlocked: gk.offTargetOrBlocked, unresolved: gk.unresolved });
+    }
+
+    const targetPbTotal = targets.filter(t => t.side === side).reduce((n, t) => n + t.pbContests, 0);
+    const matchupPbTotal = matchups.filter(m => m.attackerSide === side && m.zone === 'PENALTY_BOX').reduce((n, m) => n + m.contests, 0);
+    record(`sum(pbTargetAnalysis contests) === sum(duelMatchups PB contests as attacker) (${side})`,
+      targetPbTotal === matchupPbTotal, { targetPbTotal, matchupPbTotal });
+
+    const defenderPbTotal = defenders.filter(d => d.side === side).reduce((n, d) => n + d.contests, 0);
+    const matchupDefPbTotal = matchups.filter(m => m.defenderSide === side && m.zone === 'PENALTY_BOX').reduce((n, m) => n + m.contests, 0);
+    record(`sum(pbDefenderAnalysis contests) === sum(duelMatchups PB contests as defender) (${side})`,
+      defenderPbTotal === matchupDefPbTotal, { defenderPbTotal, matchupDefPbTotal });
+  }
+
+  // attackTermination must not double- or under-count opportunities: exactly one
+  // termination category per opportunity, summed across both sides.
+  const termination = attackTermination(match);
+  const terminationTotal = Object.values(termination.home).reduce((n, c) => n + c, 0)
+    + Object.values(termination.away).reduce((n, c) => n + c, 0);
+  record('sum(attackTermination categories) === total opportunity count (no double-count)',
+    terminationTotal === (match?.opportunities || []).length,
+    { terminationTotal, opportunityCount: (match?.opportunities || []).length });
+
+  const mismatches = checks.filter(c => !c.ok);
+  return { valid: mismatches.length === 0, checks, mismatches };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1156,5 +1717,9 @@ if (typeof module !== 'undefined' && module.exports) {
     playerDuelAnalysis, playerStatistics, assistanceAnalysis, fatigueImpact,
     laneAnalysis, counterAttackAnalysis, setPieceAnalysis, goalkeeperAnalysis,
     shotProfileAnalysis, passProfileAnalysis, playerInvolvementChains,
+    duelMatchups, pbTargetAnalysis, pbDefenderAnalysis,
+    attackingRoutes, attackTermination, classifyAttackTermination, defensiveExposure,
+    collectShotEvents, shotTechnique, attackingSequencesFor,
+    reconcileScoutingReport,
   };
 }

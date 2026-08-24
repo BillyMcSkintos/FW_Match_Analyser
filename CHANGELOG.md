@@ -9,6 +9,102 @@ Versions follow `MAJOR.MINOR.PATCH`:
 The project is pre-1.0; MAJOR is not bumped merely for internal refactors.
 `manifest.json`'s `version` field is canonical — `package.json` is kept in sync with it.
 
+## [0.6.2] — Duel-detail split view and narrative positioning capture
+
+### Added
+- The narrative's own positioning call — "close", "in decent position", "in perfect
+  position", "out of position" for outfield defenders; "in decent spot", "on the right
+  spot", "hesitant", "totally in the wrong position", "ready" for a goalkeeper — is now
+  captured (`positioning`/`gkPositioning` on duel/shot steps) instead of discarded. Per
+  the Manual, "close"/"out of position" mean no tackle attempt follows; the other
+  outfield calls proceed to a control phase, so this also distinguishes a duel won on
+  positioning alone from one won via a contested tackle.
+- Duel/shot detail rendering now splits attacker (Rec) from defender (Ast/Pos/Tack) and
+  shooter (Sh) from goalkeeper (Sa/Pos) into two side-by-side columns instead of one
+  flat stat list, with a "Won on positioning" vs "Won on tackle" tooltip and a
+  Pos/Ctrl/Tack breakdown in the player statistics table's duel-win column.
+- "Copy Scouting Report" button — copies the curated summary plus full raw
+  narrative/telemetry (both teams) to the clipboard as paste-ready text.
+
+## [0.6.1] — Scouting report correctness & reconciliation pass
+
+Fixes a real counter-attack misattribution bug found via validation against a real
+match: the opportunity funnel and attack-termination breakdown attributed every
+counter-attack shot/goal/termination to the ORIGINAL opportunity's owner instead of the
+side that actually took the action, silently omitting counter-attack shots from the
+counter-attacking team's headline stats. `shotProfileAnalysis` was already correct
+(step-level attribution), which is exactly why its totals disagreed with the funnel's.
+
+### Fixed
+- The opportunity funnel now operates per ATTACKING SEQUENCE (an opportunity's pre- and
+  post-counter-attack portions are two separate sequences, each correctly owned by
+  whichever side actually attacked) instead of blending both sides' actions under one
+  opportunity-wide entry. `attackTermination` files each opportunity's outcome under the
+  side that actually ended it, not the side that opened it.
+- Introduced one canonical shot-event list that the funnel, shot profile, and goalkeeper
+  stats all now read from, so their totals can no longer independently drift out of
+  agreement with each other.
+- Shot technique (normal/long shot/penalty) and set-piece origin (direct free kick) are
+  now two separate dimensions instead of one collapsing into the other — a direct free
+  kick narrated as a long shot no longer loses one label to keep the other.
+- Goalkeeper stats now separate on-target from off-target/blocked shots faced, and state
+  explicitly that "shots faced" includes off-target attempts whenever the narrative still
+  named a keeper for them. A GK interception was already excluded from shot counts; this
+  is now stated explicitly rather than left implicit.
+- "Assists" in the Scouting Report is relabeled "Final pass before goal" and marked
+  DERIVED — FinalWhistle's own report does not use real-football assist conventions, and
+  the extension was never sourcing this from anywhere but its own last-pass heuristic.
+- "First failed defensive contest" is relabeled "earliest failed defensive contest",
+  with an explanatory note that later defensive losses in the same sequence are not
+  counted — and "most exposed defender" is now two separate, separately-computed roles
+  (most involved in opponent shot chains vs. most frequent earliest-failed defender),
+  since a player can lead one without leading the other.
+- Scouting Signals are now generated in an explicit priority order and capped at 6 per
+  side, with lower-priority signals suppressed when a higher-priority one already named
+  the same player for what is effectively the same underlying pattern.
+- Tied statistical leaders (top scorer, most PB deliveries, main shot taker, main
+  opportunity starter/progression player/PB supplier, etc.) are now reported as
+  "Joint ... : A, B, C (N each)" instead of `sort()[0]` silently crowning an arbitrary
+  one of several tied players.
+- Goalkeeper shot totals now always reconcile: a shot event whose resolution was never
+  captured (e.g. narrative cut off mid-attempt) is counted in `shotsFaced` but tracked
+  in a new `unresolved` field rather than being silently folded into on-target or
+  off-target; the dead `CORNER`-outcome branch now also folds into `offTargetOrBlocked`
+  instead of neither bucket. `shotsFaced === onTarget + offTargetOrBlocked + unresolved`
+  always holds, and `reconcileScoutingReport()` now checks it per goalkeeper.
+
+### Added
+- A development/test-only `reconcileScoutingReport()` invariant checker verifying that
+  headline shot counts, shot-profile totals, GK shot-faced totals, and PB target/defender
+  totals all agree with the canonical shot-event list and with each other.
+
+## [0.6.0] — Scouting report gap fill
+
+### Added
+- The Scouting Report now covers what previously required rereading the raw narrative:
+  player-vs-player duel matchups (attacker/defender/zone, win rate, shots and goals
+  following each attacker win), penalty-box target and defender breakdowns (who received
+  the ball in the box, who defended it, and what each contest led to), recurring
+  attacking routes built from actual player-progression chains, an attack-termination
+  breakdown ("where attacks ended" — PB loss, midfield loss, blocked delivery,
+  interception, goal, etc. — one count per opportunity, never double-counted through a
+  corner/rebound continuation), a defensive-chain exposure view (which defenders were
+  repeatedly involved in or first-failed a shot-conceding chain), a fatigue timeline
+  (first tired/very-tired minute, substitution timing relative to each) with the
+  Manual's documented tiredness skill-penalty cited as a labeled mechanic, key player
+  involvement roles (main opportunity starter, progression player, PB supplier/target,
+  shot taker), and a Scouting Signals section — deterministic, threshold-based
+  observations phrased as counts/ratios only, never a tactical recommendation or a
+  claim about a hidden opponent setting.
+- The report distinguishes shot-producing opportunities from total shot attempts (a
+  rebound or fumble recovery can put more than one shot into a single opportunity), and
+  separates attack-origin lane, PB-delivery lane, shot lane, and turnover lane instead of
+  one generic "lane distribution" that could make a wide-origin, central-turnover
+  sequence read as if the attack itself was central.
+- Initial tactics is now its own guaranteed report section, separate from in-match
+  tactical changes, and states plainly when the scrape carries no tactics data instead
+  of silently omitting the section.
+
 ## [0.5.1] — Rebound attribution and chain-display fixes
 
 ### Added
