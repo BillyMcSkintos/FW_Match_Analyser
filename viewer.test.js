@@ -141,6 +141,296 @@ test('phase-mismatch diagnostics include compact structural summaries without th
   assert.ok(report.length < 6000, `diagnostic should remain bounded, got ${report.length} characters`);
 });
 
+test('buildScoutingReport returns a placeholder when no match is loaded', () => {
+  const ctx = loadViewerContext();
+  assert.match(ctx.buildScoutingReport(null, null), /No match loaded/);
+});
+
+test('buildScoutingReport covers both teams with a curated summary followed by the full raw narrative and telemetry', () => {
+  const ctx = loadViewerContext();
+  // Every duel role uses a distinct player so each side's totals are unambiguous to
+  // hand-verify: Bost wins on positioning, Tsur wins via a contested tackle (Control,
+  // and scores), Kova defends and wins via tackle (Tackle) — all three Home. Golan and
+  // Silva (Away) each lose the duel they defended; Reyes (Away) loses the one they
+  // attacked. So Home should show 3 duels played, 3 won, split 1/1/1, and Away should
+  // show 3 duels played, 0 won.
+  const narrative = [
+    'Minute 10', 'Opportunity for Home Team.', 'Midfield',
+    'Doe [RB] attempted low decent pass to Bost [CM]',
+    'Golan [CB] got weak assistance, and was close.',
+    'Bost [CM] made superb reception and took control of the ball.',
+    'Penalty Box',
+    'Bost [CM] attempted high excellent pass to Tsur [FW]',
+    'Silva [CB] got weak assistance, and was in decent position.',
+    'Tsur [FW] made excellent reception, Silva [CB] made weak tackle.',
+    'Tsur [FW] took control of the ball.',
+    'Goal Attempt',
+    'Tsur [FW] made excellent shot.',
+    'Ferro [GK] was ready, and made excellent effort to prevent goal.',
+    'GOAL!',
+    '[1-0]',
+    'Minute 20', 'Opportunity for Away Team.', 'Midfield',
+    'Haas [GK] attempted low decent pass to Reyes [CM]',
+    'Kova [CM] got good assistance, and was in decent position.',
+    'Reyes [CM] made weak reception, Kova [CM] made superb tackle.',
+    'Kova [CM] cleared the ball to safety.',
+    '[1-0]',
+    'Minute 30',
+    'Home Team - Issued order- Change mentality to ATTACKING',
+  ].join('\n');
+  const telemetry = [
+    "10' - H - O_MID_START", "10' - H - V_PASS - (65)", "10' - A - V_ASSISTANCE - (30)", "10' - H - V_RECEPTION - (75)",
+    "10' - H - V_PASS - (85)", "10' - A - V_ASSISTANCE - (40)", "10' - H - V_RECEPTION - (85)", "10' - A - V_TACKLING - (35)",
+    "10' - H - V_SHOT - (80)", "10' - A - V_REFLEX - (60)", "10' - H - E_GOAL",
+    "20' - A - O_MID_START", "20' - A - V_PASS - (55)", "20' - H - V_ASSISTANCE - (60)", "20' - A - V_RECEPTION - (30)", "20' - H - V_TACKLING - (75)",
+  ].join('\n');
+  const initialTactics = {
+    home: { mentality: 'BALANCED', style: 'SHORT_PASSES', marking: 'ZONAL', defenceFocus: 'CENTER', preferredSide: 'NONE' },
+    away: {},
+  };
+  const match = ctx.parseMatch(telemetry, narrative, { homeTeam: 'Home Team', awayTeam: 'Away Team', initialTactics });
+  const scrape = { homeTeam: 'Home Team', awayTeam: 'Away Team', scrapedAt: Date.UTC(2026, 7, 19), narrative, telemetry };
+
+  const report = ctx.buildScoutingReport(match, scrape);
+
+  assert.match(report, /## Home Team \(home\)/);
+  assert.match(report, /## Away Team \(away\)/);
+  assert.match(report, /final score 1-0/);
+  assert.match(report, /Scorers: Tsur \(10'\)/, 'the actual scorer must be named');
+  assert.match(report, /Final pass before goal \(DERIVED, not an FW-sourced "assist"\): Bost \(10'\)/, 'the actual final-pass player must be named, labeled DERIVED rather than "assist"');
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+  const awaySection = report.slice(report.indexOf('## Away Team'), report.indexOf('## Raw narrative'));
+  assert.match(homeSection, /Duels competed in: 3, won: 3 \(100%\)/, 'Bost + Tsur + Kova each won their one duel');
+  assert.match(homeSection, /Won breakdown — Position: 1, Control: 1, Tackle: 1/);
+  assert.match(awaySection, /Duels competed in: 3, won: 0 \(0%\)/, 'Golan, Silva, and Reyes each lost their one duel');
+  assert.match(awaySection, /Won breakdown — Position: 0, Control: 0, Tackle: 0/);
+  // Initial tactics: present and populated for Home, present but explicitly "not
+  // available" for Away — never silently absent either way.
+  assert.match(homeSection, /### Initial tactics\nMentality: BALANCED\nStyle of Play: SHORT_PASSES\nMarking: ZONAL\nDefence Focus: CENTER\nPreferred Side: NONE/);
+  assert.match(awaySection, /### Initial tactics\nNot available in this scrape\./);
+  assert.match(homeSection, /### Tactical changes\n30' — Mentality changed to ATTACKING/);
+  assert.match(awaySection, /### Tactical changes\nNo in-match tactical changes observed\./);
+  assert.match(report, /## Raw narrative/);
+  assert.match(report, /## Raw telemetry/);
+  assert.match(report, /Bost \[CM\] attempted high excellent pass to Tsur \[FW\]/, 'the exact raw narrative text must be included verbatim');
+  assert.match(report, /O_MID_START/, 'the exact raw telemetry text must be included verbatim');
+});
+
+test('buildScoutingReport: the global Key Matchups table shows both teams once; PB attacking/defending subsections are correctly one-sided by role', () => {
+  const ctx = loadViewerContext();
+  const pbDuel = (attacker, defender, outcome, side) => ({
+    stepType: 'PB_DUEL', attacker, defender, outcome,
+    attackingSide: side, defendingSide: side === 'home' ? 'away' : 'home',
+    values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: { value: 50 } },
+  });
+  // Home attacks (Tsur vs Golan, Golan defending for Away) and Away attacks (Reyes vs
+  // Kova, Kova defending for Home) — a matchup is always bilateral, so BOTH pairs must
+  // appear in the single global table, but each must land in only ONE of the four
+  // role-scoped PB subsections (Home-attacking / Home-defending / Away-attacking /
+  // Away-defending), never more than one.
+  const homeA = { name: 'Tsur', position: 'FW' }, awayD = { name: 'Golan', position: 'CB' };
+  const awayA = { name: 'Reyes', position: 'FW' }, homeD = { name: 'Kova', position: 'CB' };
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } },
+    tacticalEvents: [],
+    opportunities: [
+      { teamSide: 'home', steps: [pbDuel(homeA, awayD, 'WON', 'home')] },
+      { teamSide: 'home', steps: [pbDuel(homeA, awayD, 'WON', 'home')] },
+      { teamSide: 'away', steps: [pbDuel(awayA, homeD, 'CLEARED', 'away')] },
+      { teamSide: 'away', steps: [pbDuel(awayA, homeD, 'CLEARED', 'away')] },
+    ],
+  };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const globalMatchups = report.slice(report.indexOf('## Key Matchups'), report.indexOf('## Scouting Signals'));
+  assert.match(globalMatchups, /Tsur \| Golan/, 'the global table must include both recurring matchups');
+  assert.match(globalMatchups, /Reyes \| Kova/);
+
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+  const awaySection = report.slice(report.indexOf('## Away Team'), report.indexOf('## Key Matchups'));
+  const homeAttackingBlock = homeSection.slice(homeSection.indexOf('#### PB matchups — Home Team attacking'), homeSection.indexOf('#### PB matchups — Home Team defending'));
+  const homeDefendingBlock = homeSection.slice(homeSection.indexOf('#### PB matchups — Home Team defending'), homeSection.indexOf('#### Defensive-chain exposure'));
+  assert.match(homeAttackingBlock, /Tsur \| Golan/, "Home's own attacking matchup belongs under Home attacking");
+  assert.doesNotMatch(homeAttackingBlock, /Reyes \| Kova/, 'Away attacking a Home defender must not appear under Home attacking');
+  assert.match(homeDefendingBlock, /Reyes \| Kova/, "Home's own defender's matchup belongs under Home defending");
+  assert.doesNotMatch(homeDefendingBlock, /Tsur \| Golan/);
+
+  const awayAttackingBlock = awaySection.slice(awaySection.indexOf('#### PB matchups — Away Team attacking'), awaySection.indexOf('#### PB matchups — Away Team defending'));
+  assert.match(awayAttackingBlock, /Reyes \| Kova/);
+  assert.doesNotMatch(awayAttackingBlock, /Tsur \| Golan/);
+});
+
+test('buildScoutingReport: attacking routes, attack termination, and fatigue timeline surface real recurring data', () => {
+  const ctx = loadViewerContext();
+  const rb = { name: 'Bilardo', position: 'RB' }, rm = { name: 'Bakkely', position: 'RM' }, fw = { name: 'Tsur', position: 'FW' };
+  const passStep = (from, to) => ({ stepType: 'START_PASS', from, to, attackingSide: 'home', defendingSide: 'away', values: { pass: { value: 60 } } });
+  const shot = (outcome) => ({ stepType: 'SHOT', shooter: fw, outcome, attackingSide: 'home', defendingSide: 'away', values: { shot: { value: 70 }, gkSave: { value: 40 } } });
+  const oneOpp = (outcome) => ({ teamSide: 'home', finalOutcome: outcome, steps: [passStep(rb, rm), passStep(rm, fw), shot(outcome)] });
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 1, away: 0 } },
+    tacticalEvents: [
+      { type: 'TIREDNESS', minute: 55, sequence: 55, team: 'Home Team', teamSide: 'home', player: rm, level: 'TIRED' },
+      { type: 'TIREDNESS', minute: 75, sequence: 75, team: 'Home Team', teamSide: 'home', player: rm, level: 'VERY_TIRED' },
+      { type: 'SUBSTITUTION', minute: 80, sequence: 80, team: 'Home Team', teamSide: 'home', playerOut: rm, playerIn: { name: 'Sub', position: 'RM' } },
+    ],
+    opportunities: [oneOpp('GOAL'), oneOpp('GOAL'), oneOpp('MISSED')],
+  };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+  assert.match(homeSection, /Bilardo RB → Bakkely RM → Tsur FW — 3 times/, 'the repeated three-player route must be reported with its real occurrence count');
+  assert.match(homeSection, /Goal: 2/);
+  assert.match(homeSection, /Shot missed: 1/);
+  assert.match(homeSection, /Bakkely: tired 55', very tired 75', substituted 80'/, 'the fatigue timeline must show the real tired/very-tired/substitution minutes for this player');
+  assert.match(homeSection, /Manual mechanic: TIRED applies a skill penalty/, 'the tiredness skill-penalty mechanic must be cited as a labeled Manual mechanic');
+});
+
+test('buildScoutingReport: Scouting Signals stay observed/derived language, never a tactical recommendation or setting inference', () => {
+  const ctx = loadViewerContext();
+  const pbDuel = (attacker, defender, outcome) => ({
+    stepType: 'PB_DUEL', attacker, defender, outcome, attackingSide: 'home', defendingSide: 'away',
+    values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: { value: 70 } },
+  });
+  const attacker = { name: 'Tsur', position: 'FW' }, defender = { name: 'Golan', position: 'CB' };
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } },
+    tacticalEvents: [],
+    // Golan loses 3 of 4 PB contests, each followed by a shot — crosses the
+    // buildScoutingSignals defender-exposure threshold (contests>=3, lost/contests>=0.5).
+    opportunities: [
+      { teamSide: 'home', steps: [pbDuel(attacker, defender, 'WON'), { stepType: 'SHOT', shooter: attacker, outcome: 'SAVED', attackingSide: 'home', defendingSide: 'away', values: {} }] },
+      { teamSide: 'home', steps: [pbDuel(attacker, defender, 'WON'), { stepType: 'SHOT', shooter: attacker, outcome: 'MISSED', attackingSide: 'home', defendingSide: 'away', values: {} }] },
+      { teamSide: 'home', steps: [pbDuel(attacker, defender, 'WON'), { stepType: 'SHOT', shooter: attacker, outcome: 'GOAL', attackingSide: 'home', defendingSide: 'away', values: {} }] },
+      { teamSide: 'home', steps: [pbDuel(attacker, defender, 'CLEARED')] },
+    ],
+  };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const signals = report.slice(report.indexOf('## Scouting Signals'), report.indexOf('## Raw narrative'));
+  assert.match(signals, /Golan/, 'the repeated PB defender loss must actually surface as a signal on this fixture');
+  const forbidden = /\b(should|recommend|attack (their|his|her)|use man-to-man|press |prefer(?:s|red)?|instructed|weak defender|bad player|responsible for)\b/i;
+  assert.doesNotMatch(signals, forbidden, 'Scouting Signals must state observed counts/ratios only, never a recommendation or a tactical-setting inference');
+  // This same fixture also has Tsur beating Golan 3/4 in their direct matchup — a
+  // priority-4 signal that describes the exact same underlying vulnerability as the
+  // priority-3 "Golan lost 3/4 PB contests" signal above. Only the higher-priority one
+  // should survive; the matchup line must not restate it.
+  assert.match(signals, /lost 3\/4 PB contests/, 'the PB-defender-exposure signal (priority 3) must be kept');
+  assert.doesNotMatch(signals, /Tsur vs Golan/, 'the redundant dominant-matchup signal (priority 4, same player) must be suppressed');
+  // Tsur's own PB attacking success is a DIFFERENT fact (his conversion record as an
+  // attacker, not a restatement of Golan's exposure) and must still come through.
+  assert.match(signals, /Tsur \(Home Team\): won 3\/4 PB contests as the attacker/);
+});
+
+test('buildScoutingReport: Scouting Signals are capped at 6 per side even with many qualifying candidates', () => {
+  const ctx = loadViewerContext();
+  const pbDuel = (attacker, defender, outcome) => ({
+    stepType: 'PB_DUEL', attacker, defender, outcome, attackingSide: 'away', defendingSide: 'home',
+    values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: { value: 70 } },
+  });
+  const shot = (shooter, outcome) => ({ stepType: 'SHOT', shooter, outcome, attackingSide: 'away', defendingSide: 'home', values: {} });
+  // Seven DIFFERENT home defenders, each losing 3/3 PB contests to a shared away
+  // attacker — seven genuinely distinct priority-3 signals (different players, so
+  // dedup must not suppress any of them), enough to prove the cap itself is doing the
+  // limiting, not the dedup logic.
+  const attacker = { name: 'Striker', position: 'FW' };
+  const opportunities = [];
+  const defenderNames = ['DefA', 'DefB', 'DefC', 'DefD', 'DefE', 'DefF', 'DefG'];
+  for (const name of defenderNames) {
+    const defender = { name, position: 'CB' };
+    for (let i = 0; i < 3; i++) {
+      opportunities.push({ teamSide: 'away', steps: [pbDuel(attacker, defender, 'WON'), shot(attacker, 'SAVED')] });
+    }
+  }
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } },
+    tacticalEvents: [],
+    opportunities,
+  };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const signals = report.slice(report.indexOf('## Scouting Signals'), report.indexOf('## Raw narrative'));
+  const homeSignalLines = signals.split('\n').filter(l => defenderNames.some(name => l.includes(name)));
+  assert.ok(homeSignalLines.length <= 6, `expected at most 6 Home-side signals, got ${homeSignalLines.length}: ${JSON.stringify(homeSignalLines)}`);
+  assert.ok(homeSignalLines.length >= 1, 'the cap must not suppress everything either');
+});
+
+test('buildScoutingReport: defensive-chain exposure keeps "most involved" and "most frequent earliest failed" as two separate roles, using the relabeled terminology', () => {
+  const ctx = loadViewerContext();
+  const attacker = { name: 'Attacker', position: 'FW' };
+  const stoilkovic = { name: 'Stoilkovic', position: 'CB' };
+  const midDuel = (defender, outcome) => ({
+    stepType: 'MID_DUEL', attacker, defender, outcome, attackingSide: 'away', defendingSide: 'home',
+    values: { reception: { value: 60 }, assistance: { value: 40 }, tackle: outcome === 'CLEARED' ? { value: 70 } : null },
+  });
+  const pbDuel = (defender) => ({
+    stepType: 'PB_DUEL', attacker, defender, outcome: 'WON', attackingSide: 'away', defendingSide: 'home',
+    values: { reception: { value: 70 }, assistance: { value: 30 }, tackle: { value: 40 } },
+  });
+  const shot = { stepType: 'SHOT', shooter: attacker, outcome: 'SAVED', attackingSide: 'away', defendingSide: 'home', values: {} };
+  const opportunities = [];
+  // Stoilkovic defends the PB stage in all 5 chains (involved in 5), but the midfield
+  // stage is lost first each time — 3 of those 5 to Gesevic specifically, 2 to a
+  // throwaway defender — so Stoilkovic is NEVER the earliest failed duel, while Gesevic
+  // is, 3 times, despite being involved in fewer chains overall.
+  for (let i = 0; i < 3; i++) {
+    opportunities.push({ teamSide: 'away', steps: [
+      midDuel({ name: 'Gesevic', position: 'DM' }, 'POSSESSION'), pbDuel(stoilkovic), shot,
+    ] });
+  }
+  for (let i = 0; i < 2; i++) {
+    opportunities.push({ teamSide: 'away', steps: [
+      midDuel({ name: 'OtherDef', position: 'DM' }, 'POSSESSION'), pbDuel(stoilkovic), shot,
+    ] });
+  }
+  const match = { meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } }, tacticalEvents: [], opportunities };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+
+  assert.match(homeSection, /Most involved in opponent shot chains: Stoilkovic \(5\)/);
+  assert.match(homeSection, /Most frequent earliest failed defender: Gesevic \(3\)/);
+  // The relabeled per-row terminology — "earliest failed defensive contest", not the
+  // old "first failed defensive contest" wording that read as sole responsibility.
+  assert.match(homeSection, /earliest failed defensive contest in/);
+  assert.doesNotMatch(homeSection, /first failed defensive contest/);
+  assert.match(homeSection, /Note: "earliest failed defensive contest"/);
+});
+
+test('buildScoutingReport: tied leaders are reported jointly instead of an arbitrary single winner', () => {
+  const ctx = loadViewerContext();
+  const shot = (shooter, outcome) => ({ stepType: 'SHOT', shooter, outcome, attackingSide: 'home', defendingSide: 'away', values: {} });
+  const pass = (from, to) => ({ stepType: 'START_PASS', from, to, attackingSide: 'home', defendingSide: 'away', values: { pass: { value: 60 } } });
+  // Three different players each take exactly one shot — a genuine three-way tie for
+  // "main shot taker", not a case where sort()[0] should get to arbitrarily pick one.
+  const players = ['Zubac', 'Karolyi', 'Saarela'].map(name => ({ name, position: 'FW' }));
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } },
+    tacticalEvents: [],
+    opportunities: players.map(p => ({ teamSide: 'home', steps: [pass({ name: 'Passer', position: 'CM' }, p), shot(p, 'SAVED')] })),
+  };
+  const report = ctx.buildScoutingReport(match, { homeTeam: 'Home Team', awayTeam: 'Away Team' });
+  const homeSection = report.slice(report.indexOf('## Home Team'), report.indexOf('## Away Team'));
+  assert.match(homeSection, /Joint main shot takers: Zubac, Karolyi, Saarela \(1 each\)/);
+  assert.doesNotMatch(homeSection, /Main shot taker: Zubac \(1\)/, 'must not silently crown one of the tied players as THE leader');
+});
+
+test('goalkeeper aggregation reconciles even for the currently-unreachable CORNER shot outcome (defensive correctness, not just the reachable paths)', () => {
+  const ctx = loadViewerContext();
+  const gk = { name: 'Keeper', position: 'GK' };
+  const shooter = { name: 'Shooter', position: 'FW' };
+  // Bypasses the narrative parser entirely — constructs a match object with a raw SHOT
+  // step whose outcome is 'CORNER' directly, since real narrative parsing never produces
+  // this today (see SHOT_TERMINALS in parser.js) but the aggregation must not silently
+  // break its own invariant if it ever did.
+  const match = {
+    meta: { homeTeam: 'Home Team', awayTeam: 'Away Team', finalScore: { home: 0, away: 0 } },
+    opportunities: [{ teamSide: 'away', steps: [
+      { stepType: 'SHOT', shooter, gk, outcome: 'CORNER', attackingSide: 'away', defendingSide: 'home', values: {} },
+    ] }],
+  };
+  const gkAnalysis = ctx.goalkeeperAnalysis(match);
+  const rec = gkAnalysis.byGoalkeeper['Keeper'];
+  assert.equal(rec.shotsFaced, 1);
+  assert.equal(rec.cornersConceded, 1);
+  assert.equal(rec.offTargetOrBlocked, 1, 'a CORNER outcome must be folded into offTargetOrBlocked, not silently dropped from the onTarget+offTargetOrBlocked+unresolved reconciliation');
+  assert.equal(rec.shotsFaced, rec.onTarget + rec.offTargetOrBlocked + rec.unresolved);
+});
+
 test('generated viewer wording normalizes the raw narrow miss grammar', () => {
   const ctx = loadViewerContext();
   assert.equal(ctx.outcomeLabel('MISSED', 'narrow'), 'missed narrowly');
@@ -896,6 +1186,9 @@ test('player statistics render separate home and away tables with requested colu
   assert.match(html, /Very tired \(min\)/);
   assert.match(html, /Away Keeper/);
   assert.match(html, /Home Player <span class="player-position">\[CM\]<\/span>/);
+  assert.match(html, /<th[^>]*>Duels<\/th>/);
+  assert.match(html, /Won \(Pos\/Ctrl\/Tack\)/);
+  assert.match(html, />1\/0\/0</, 'Home Player won the one duel on positioning alone (no tackle value present)');
   assert.doesNotMatch(html, /<th>Pos<\/th>/);
   assert.match(html, /1 \(1\)/);
   assert.match(html, /100%/);
@@ -1167,6 +1460,82 @@ test('createExportJpeg and saveJpg exist as functions — actual canvas/Image ra
   const ctx = loadViewerContext();
   assert.equal(typeof ctx.createExportJpeg, 'function');
   assert.equal(typeof ctx.saveJpg, 'function');
+});
+
+test('duel detail splits attacker (Rec) from defender (Ast/Pos/Tack) and shows dashed Tack plus a positioning-win tooltip when positioning alone decided it', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderStepDetail({
+    minute: 1,
+    steps: [{
+      stepType: 'MID_DUEL',
+      attacker: { name: 'Nicolai Bakkely', position: 'RM' },
+      defender: { name: 'Julio Manuel Wu', position: 'LW' },
+      positioning: 'out of position',
+      outcome: 'POSSESSION',
+      values: { reception: { value: 60, label: 'good' }, assistance: { value: 85, label: 'superb' }, tackle: null },
+    }],
+  });
+  assert.match(html, /class="split-off"[^]*?Rec:[^]*?60/, 'Rec must be on the offense (left) side');
+  assert.match(html, /class="split-def"[^]*?Ast:[^]*?85/, 'Ast must be on the defense (right) side, not with Rec');
+  assert.match(html, /Pos:<\/span><span class="val-word">out of position/, 'positioning phrase must render labeled as Pos:');
+  assert.match(html, /Tack:<\/span><span class="val-num">—/, 'no tackle occurred, so Tack must show a dash, not vanish');
+  assert.match(html, /title="Won on positioning"/);
+  assert.doesNotMatch(html, /grp-lbl|>OFF<|>DEF</, 'no separate OFF/DEF text label — left/right position already conveys it');
+  assert.match(html, /class="split-off"><span class="p-nm">Bakkely/, 'attacker name must use the same prominent p-nm\\/p-pos styling as every other row');
+});
+
+test('duel detail shows a real Tack value and a tackle-win tooltip when a control phase actually occurred', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderStepDetail({
+    minute: 10,
+    steps: [{
+      stepType: 'PB_DUEL',
+      attacker: { name: 'Naor Tsur', position: 'FW' },
+      defender: { name: 'Arad Golan', position: 'CB' },
+      positioning: 'ready',
+      outcome: 'WON',
+      values: { reception: { value: 70, label: 'good' }, assistance: { value: 50, label: 'decent' }, tackle: { value: 30, label: 'weak' } },
+    }],
+  });
+  assert.match(html, /Pos:<\/span><span class="val-word">ready/);
+  assert.match(html, /Tack:<\/span><span class="val-num" style="color:[^"]*">30/, 'a real tackle value must render normally, not dashed');
+  assert.doesNotMatch(html, /Tack:<\/span><span class="val-num">—/);
+  assert.match(html, /title="Won on tackle"/);
+});
+
+test('duel detail omits the outcome tooltip entirely when the defense won the duel', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderStepDetail({
+    minute: 20,
+    steps: [{
+      stepType: 'MID_DUEL',
+      attacker: { name: 'Player A', position: 'FW' },
+      defender: { name: 'Player B', position: 'CB' },
+      positioning: 'in decent position',
+      outcome: 'CLEARED',
+      values: { reception: { value: 40, label: 'weak' }, assistance: { value: 70, label: 'good' }, tackle: { value: 65, label: 'good' } },
+    }],
+  });
+  assert.doesNotMatch(html, /title="Won on/);
+});
+
+test('shot detail splits shooter (Sh) from goalkeeper (Sa/Pos), attributing shot-context flags to the offense block', () => {
+  const ctx = loadViewerContext();
+  const html = ctx.renderStepDetail({
+    minute: 51,
+    steps: [{
+      stepType: 'SHOT',
+      shooter: { name: 'Gniewosz Ryszawa', position: 'FW' },
+      gk: { name: 'Vít Šafařík', position: 'GK' },
+      gkPositioning: 'totally in the wrong position',
+      oneOnOne: true,
+      outcome: 'GOAL',
+      values: { shot: { value: 85, label: 'excellent' }, gkSave: { value: 20, label: 'awful' } },
+    }],
+  });
+  assert.match(html, /class="split-off"[^]*?1v1[^]*?Sh:[^]*?85/, 'shot flags and Sh must be on the offense (left) side with the shooter');
+  assert.match(html, /class="split-def"[^]*?Sa:[^]*?20/, 'Sa must be on the defense (right) side with the goalkeeper');
+  assert.match(html, /Pos:<\/span><span class="val-word">totally in the wrong position/);
 });
 
 test('shot detail preserves weak, poor, and good angle labels', () => {

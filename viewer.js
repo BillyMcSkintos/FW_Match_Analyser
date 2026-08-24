@@ -840,6 +840,14 @@ function lv(label, qvObj) {
   const color = tierColor(qvObj.label);
   return `<span class="val-item"><span class="val-lbl">${label}:</span><span class="val-num" style="color:${color}">${qvObj.value}</span><span class="val-word">${qvObj.label||''}</span></span>`;
 }
+// Word-only counterpart to lv() for narrative-only fields with no numeric/quality backing
+// (positioning results — "close", "in decent position", etc.), same as parser.js does not
+// invent a number for shotAngle either. Returns null (dropped by .filter(Boolean)) when
+// the field wasn't captured, e.g. an older stored scrape from before this field existed.
+function posTag(label, text) {
+  if (!text) return null;
+  return `<span class="val-item"><span class="val-lbl">${label}:</span><span class="val-word">${escapeHtml(text)}</span></span>`;
+}
 // ── Player status (injury/tiredness) ─────────────────────────────────────────────────
 // Resolved from tacticalEvents at render time: walk events up to a given minute, tracking
 // the most recent injury/tiredness onset per player.
@@ -923,8 +931,25 @@ function renderStepDetail(opp) {
     const ol  = outcomeLabel(s.outcome, s.missType);
     const caCls = s.isCA ? ' ca-step' : '';
 
-    let players = '';
-    let vals    = '';
+    let players  = '';
+    let vals     = '';
+    let outTitle = '';
+    let isSplit  = false;
+    // Builds the shared OFFENSE-left/DEFENSE-right layout used by both duels and shots
+    // below: attacker/shooter always on the left, defender/goalkeeper always on the
+    // right, regardless of which side is attacking — no OFF/DEF text label needed since
+    // the position alone conveys it, and the bordered player name already matches the
+    // prominence every other row gives names (nm()), rather than shrinking them into a
+    // label line.
+    const splitRow = (offPlayer, offStats, defPlayer, defStats) => {
+      isSplit = true;
+      const offLine = offStats.filter(Boolean).join('');
+      const defLine = defStats.filter(Boolean).join('');
+      return `<div class="split">
+        <div class="split-off">${nm(offPlayer, opp.minute)}${offLine ? `<span class="stat-line">${offLine}</span>` : ''}</div>
+        <div class="split-def">${nm(defPlayer, opp.minute)}${defLine ? `<span class="stat-line">${defLine}</span>` : ''}</div>
+      </div>`;
+    };
     switch (s.stepType) {
       case 'START_PASS': case 'PB_PASS': case 'SP_PASS': case 'FK_PASS':
         players = `${nm(s.from, opp.minute)} <span class="p-arr">→</span> ${nm(s.to, opp.minute)}`;
@@ -935,16 +960,26 @@ function renderStepDetail(opp) {
           s.passerUnderPressure ? '<span class="flag-warn">rushed</span>' : null,
         ].filter(Boolean).join(' ');
         break;
-      case 'MID_DUEL': case 'PB_DUEL': case 'SP_DUEL': case 'FK_DUEL':
-        players = `${nm(s.attacker, opp.minute)} <span class="p-vs">vs</span> ${nm(s.defender, opp.minute)}`;
-        vals = [
-          lv('Rec',  v.reception),
-          lv('Ast',  v.assistance),
-          lv('Tack', v.tackle),
+      // Left side is the attacker's own execution (Reception); right side is the
+      // defender's resistance (Assistance — per the manual, help given TO the defender,
+      // not an attacker stat — Positioning, and Tackle). Positioning is the defender's
+      // OP-vs-DP result narrated on the assistance line (parser.js); the control phase
+      // (BC vs TA, i.e. Tackle) only happens when positioning was "ready", "in decent
+      // position", or "in perfect position" — "close"/"out of position" win the duel for
+      // the attacker on positioning alone, with no tackle attempt at all. Tack renders as
+      // a dash rather than vanishing in that case, so "no tackle happened" is visible.
+      case 'MID_DUEL': case 'PB_DUEL': case 'SP_DUEL': case 'FK_DUEL': {
+        const hasTackle = v.tackle?.value != null;
+        if (attackerWonDuel(s)) outTitle = hasTackle ? 'Won on tackle' : 'Won on positioning';
+        players = splitRow(s.attacker, [lv('Rec', v.reception)], s.defender, [
+          lv('Ast', v.assistance),
+          posTag('Pos', s.positioning),
+          hasTackle ? lv('Tack', v.tackle) : '<span class="val-item val-dash"><span class="val-lbl">Tack:</span><span class="val-num">—</span></span>',
           s.fouler     ? `<span class="flag-foul">foul ${escapeHtml(s.fouler.name?.split(' ').pop())}</span>` : null,
           s.yellowCard ? `<span class="flag-yc">YC ${escapeHtml(s.yellowCard.name?.split(' ').pop())}</span>` : null,
-        ].filter(Boolean).join('  ');
+        ]);
         break;
+      }
       case 'DRIB':
         players = `${nm(s.dribbler, opp.minute)} <span class="p-vs">dribbles</span> ${nm(s.defender, opp.minute)}`;
         vals = [
@@ -953,26 +988,36 @@ function renderStepDetail(opp) {
           lv('Tack', v.tackle),
         ].filter(Boolean).join('  ');
         break;
-      case 'SHOT': case 'FK_SHOT':
-        players = `${nm(s.shooter, opp.minute)} <span class="p-vs">vs</span> ${nm(s.gk, opp.minute)}`;
-        vals = [
-          // These describe the shot itself (type/angle/situation), so they come before
-          // Sh/Sa — trailing after Sa read as if they described the save instead.
+      // Same offense-left/defense-right split as duels above, for the same reason: Sh
+      // (shot quality) belongs to the shooter, Sa (save quality) belongs to the
+      // goalkeeper, and the flat inline list gave them equal, unattributed weight.
+      // gkPositioning is the keeper's own "was ready"/"was hesitant"/"was totally in the
+      // wrong position" narrative call (parser.js), the same positioning-before-control
+      // mechanic duels have, just worded differently for a GK save. The outcome badge
+      // itself already distinguishes goal/saved/post/blocked/missed, so no extra tooltip
+      // is added here.
+      case 'SHOT': case 'FK_SHOT': {
+        const shotFlags = [
           (s.shotType && s.shotType !== 'goal') ? `<span class="flag-pt">${s.shotType}</span>` : null,
           s.shotAngle  ? `<span class="${s.shotAngle === 'good' ? 'flag-pt' : 'flag-warn'}">${escapeHtml(s.shotAngle)} angle</span>` : null,
           s.oneOnOne   ? '<span class="flag-warn">1v1</span>'        : null,
           s.isLongShot ? '<span class="flag-pt">long</span>'         : null,
-          lv('Sh', v.shot),
+        ].filter(Boolean).join(' ');
+        players = splitRow(s.shooter, [shotFlags || null, lv('Sh', v.shot)], s.gk, [
           lv('Sa', v.gkSave),
-        ].filter(Boolean).join('  ');
+          posTag('Pos', s.gkPositioning),
+        ]);
         break;
+      }
     }
 
+    const cells = isSplit
+      ? `<td colspan="2">${players}</td>`
+      : `<td style="padding-left:6px">${players}</td><td style="padding-left:8px">${vals}</td>`;
     return `<tr class="step-tr${caCls}">
       <td><span class="stype ${cls}">${lbl}</span></td>
-      <td style="padding-left:6px">${players}</td>
-      <td style="padding-left:8px">${vals}</td>
-      <td style="text-align:right;white-space:nowrap">${ol?`<span class="out-badge ${oc}">${ol}</span>`:''}</td>
+      ${cells}
+      <td style="text-align:right;white-space:nowrap">${ol?`<span class="out-badge ${oc}"${outTitle?` title="${escapeHtml(outTitle)}"`:''}>${ol}</span>`:''}</td>
     </tr>`;
   });
   return `<table class="step-table">${rows.join('')}</table>`;
@@ -1560,7 +1605,10 @@ function renderPlayerStatisticsTeam(label, side, players) {
     <td class="${p.replacedPlayer ? 'player-substitute' : ''}" title="${escapeHtml(p.name)}${p.replacedPlayer ? ` replaced ${escapeHtml(p.replacedPlayer)} at ${escapeHtml(String(p.substitutedInMinute))}'` : ''}">${p.replacedPlayer ? '<span class="sub-arrow">↳</span>' : ''}${escapeHtml(p.name)}${positions ? ` <span class="player-position">[${escapeHtml(positions)}]</span>` : ''}${p.substitutedInMinute != null ? ` <span class="sub-minute">${escapeHtml(String(p.substitutedInMinute))}'</span>` : ''}${flags ? ` <span class="player-flags">${flags}</span>` : ''}</td>
     <td>${escapeHtml(String(p.minutesPlayed))}</td>
     <td>${count(p.shotsFaced)}</td><td>${count(p.saves)}</td><td>${count(p.interceptions)}</td><td>${count(p.blocks)}</td>
-    <td>${count(p.tackles)}</td><td>${escapeHtml(String(p.passes))} (${escapeHtml(String(p.completedPasses))})</td>
+    <td>${count(p.tackles)}</td>
+    <td>${count(p.duelsPlayed)}</td>
+    <td>${p.duelsPlayed ? escapeHtml(`${p.duelsWonPosition}/${p.duelsWonControl}/${p.duelsWonTackle}`) : '<span class="zero">–</span>'}</td>
+    <td>${escapeHtml(String(p.passes))} (${escapeHtml(String(p.completedPasses))})</td>
     <td>${p.passCompletionPct == null ? '<span class="zero">–</span>' : `${escapeHtml(String(p.passCompletionPct))}%`}</td>
     <td>${count(p.assists)}</td><td>${count(p.shots)}</td><td>${count(p.shotsOnTarget)}</td><td>${count(p.goals)}</td><td>${count(p.fouls)}</td>
     <td>${minutes(p.tiredMinutes)}</td><td>${minutes(p.veryTiredMinutes)}</td>
@@ -1570,6 +1618,8 @@ function renderPlayerStatisticsTeam(label, side, players) {
     <div class="player-stats-scroll"><table class="player-stats-table">
       <thead><tr><th>Player</th><th title="Minutes played">Min</th>
         <th title="All parsed shots naming this goalkeeper">Shots faced</th><th>Saves</th><th title="Interceptions">Interceptions</th><th>Blocks</th><th>Tackles</th>
+        <th title="Duels (including dribbles) competed in, as either attacker or defender">Duels</th>
+        <th title="Duels won, broken down as Position (won on positioning alone, no tackle attempted) / Control (a tackle was contested and this player kept the ball) / Tackle (a tackle was contested and this player won it defensively)">Won (Pos/Ctrl/Tack)</th>
         <th title="Passes attempted, with completed passes in parentheses">Passes (completed)</th><th title="Completed passes divided by attempted passes">Pass %</th>
         <th>Assists</th><th>Shots</th><th title="Shots resulting in a goal, save, or goalkeeper fumble">On target</th><th>Goals</th><th>Fouls</th>
         <th title="First minute reported tired">Tired (min)</th>
@@ -1957,6 +2007,537 @@ function narrativeContexts(narrative, unknownLines, radius = 3) {
       occurrence: index + 1,
     };
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCOUTING REPORT — a single paste-ready text digest for opposition analysis. Combines
+// a curated per-team summary (built from the same analytics.js functions the Stats/
+// Analysis tabs already render) with the full raw narrative+telemetry as supporting
+// detail, so an LLM reading it has both a distilled read and the ability to verify or
+// dig deeper than the summary goes. Deliberately covers both teams, clearly labeled —
+// this extension has no concept of "my team" vs "opposition", only home/away, so which
+// half is the opposition is left to the reader.
+function formatPct(num, den) { return den ? `${Math.round(num * 100 / den)}%` : 'n/a'; }
+
+// Finds every item tied at the maximum value, not just an arbitrary first one — a naive
+// .sort(...)[0] silently picks whichever object happened to iterate first, which reads
+// as a deliberate "the leader" choice even though it isn't one. A genuine single leader
+// still gets the plain singular phrasing; a tie renders as "Joint <label>: A, B, C (N
+// each)" instead of crowning one of them arbitrarily.
+function topTiedLine(items, valueFn, nameFn, { single, joint }) {
+  const withValue = items.filter(i => valueFn(i) > 0);
+  if (!withValue.length) return null;
+  const max = Math.max(...withValue.map(valueFn));
+  const leaders = withValue.filter(i => valueFn(i) === max);
+  if (leaders.length === 1) return `${single}: ${nameFn(leaders[0])} (${max})`;
+  return `${joint}: ${leaders.map(nameFn).join(', ')} (${max} each)`;
+}
+
+// Always present, even when the scrape carries no initialTactics (an older stored scrape,
+// or a match page where the summary card wasn't captured — see scraper.js) — an omitted
+// section reads as "not checked", not "checked and empty", so this states plainly when
+// the data itself isn't available rather than silently disappearing.
+function scoutingInitialTacticsLines(match, side) {
+  const t = match?.meta?.initialTactics?.[side];
+  // scraper.js's sanitizedInitialTactics() can legitimately produce an empty-but-present
+  // {} for one side (e.g. only the other side's summary card was visible on the page) —
+  // that must read the same as a wholly missing initialTactics, not as five "unknown"s.
+  if (!t || !(t.mentality || t.style || t.marking || t.defenceFocus || t.preferredSide))
+    return ['Not available in this scrape.'];
+  return [
+    `Mentality: ${t.mentality || 'unknown'}`,
+    `Style of Play: ${t.style || 'unknown'}`,
+    `Marking: ${t.marking || 'unknown'}`,
+    `Defence Focus: ${t.defenceFocus || 'unknown'}`,
+    `Preferred Side: ${t.preferredSide || 'unknown'}`,
+  ];
+}
+
+function scoutingTacticalChangeLines(match, side) {
+  const changes = (match?.tacticalEvents || [])
+    .filter(e => e.teamSide === side && ['MENTALITY_CHANGE', 'STYLE_CHANGE', 'PREFERRED_SIDE_CHANGE', 'SUBSTITUTION'].includes(e.type))
+    .sort((a, b) => (a.sequence ?? a.minute ?? 0) - (b.sequence ?? b.minute ?? 0));
+  if (!changes.length) return ['No in-match tactical changes observed.'];
+  return changes.map(e => {
+    if (e.type === 'MENTALITY_CHANGE') return `${e.minute}' — Mentality changed to ${e.mentality}`;
+    if (e.type === 'STYLE_CHANGE') return `${e.minute}' — Style of Play changed to ${e.style}`;
+    if (e.type === 'PREFERRED_SIDE_CHANGE') return `${e.minute}' — Preferred Side changed to ${e.preferredSide}`;
+    return `${e.minute}' — Substitution: ${e.playerOut?.name || '?'} off, ${e.playerIn?.name || '?'} on`;
+  });
+}
+
+function scoutingFunnelLines(funnel, side) {
+  const f = funnel[side];
+  if (!f.total) return ['No recorded opportunities.'];
+  return [
+    `Opportunities: ${f.total}`,
+    `Reached midfield duel: ${f.reachedMidfield} (won ${f.wonMidfield}, ${formatPct(f.wonMidfield, f.reachedMidfield)})`,
+    `Reached penalty box: ${f.reachedPenaltyBox} (${formatPct(f.reachedPenaltyBox, f.total)} of opportunities)`,
+    // Two different denominators, stated separately rather than folded into one number:
+    // shot-PRODUCING opportunities (how many separate attacks got a shot away at all) vs
+    // total shot ATTEMPTS (which can exceed it — a rebound, a fumble recovery, or a
+    // set-piece continuation can put more than one shot into a single opportunity).
+    `Shot-producing opportunities: ${f.shots} (${formatPct(f.shots, f.total)} of opportunities)`,
+    `Total shot attempts: ${f.shotAttempts}`,
+    `Goals: ${f.goals} (${formatPct(f.goals, f.shotAttempts)} of shot attempts)`,
+  ];
+}
+
+const TERMINATION_LABELS = {
+  GOAL: 'Goal', SHOT_SAVED: 'Shot saved', SHOT_FUMBLED: 'Shot fumbled (loose ball)',
+  SHOT_MISSED: 'Shot missed', SHOT_BLOCKED: 'Shot blocked', GK_INTERCEPTION: 'GK interception',
+  OFFSIDE: 'Offside', SET_PIECE_CONTINUATION: 'Set-piece continuation (never resolved further)',
+  FOUL_AWARDED: 'Foul awarded', PB_DELIVERY_BLOCKED: 'Blocked PB delivery', PB_LOSS: 'PB duel loss',
+  SET_PIECE_LOSS: 'Set-piece duel loss', MIDFIELD_LOSS: 'Midfield duel loss', OTHER_UNKNOWN: 'Other/unknown',
+};
+// Each opportunity contributes exactly one count here (attackTermination reads the
+// opportunity's own already-deduplicated finalOutcome), so these figures always sum to
+// the same "Opportunities" total shown in the funnel above — nothing here is a second,
+// re-derived attempt at the same count.
+function scoutingTerminationLines(termination, side) {
+  const entries = Object.entries(termination[side] || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return ['No recorded opportunities.'];
+  return entries.map(([cat, n]) => `${TERMINATION_LABELS[cat] || cat}: ${n}`);
+}
+
+function scoutingShotLines(shotProfile, side) {
+  const types = shotProfile[side];
+  const keys = Object.keys(types);
+  if (!keys.length) return ['No shots recorded.'];
+  return keys.map(type => {
+    const t = types[type];
+    return `${type}: ${t.attempts} attempt(s), ${t.goals} goal(s)${t.avgShotValue != null ? `, avg shot quality ${t.avgShotValue}` : ''}`;
+  });
+}
+
+function scoutingPassLines(passProfile, side) {
+  const h = passProfile.byHeight[side];
+  const laneToFW = passProfile.laneRoutesToFW[side];
+  const lines = [`Passing height: ${h.low} low, ${h.high} high`];
+  if (laneToFW.wide + laneToFW.center > 0)
+    lines.push(`Routes into the forward: ${laneToFW.wide} wide, ${laneToFW.center} central`);
+  return lines;
+}
+
+// Each line names a DIFFERENT stage of the attack, deliberately kept separate rather
+// than one generic "lane distribution" — where an attack STARTED, where it delivered
+// INTO the box, and where it eventually TURNED OVER are three different questions, and
+// collapsing them risks a wide-origin/central-turnover sequence reading as if the
+// turnover itself proves the attack was central. All counts are by each ACTION's own
+// reported position (laneAnalysis's OBSERVED/DERIVED convention), never a declared
+// Preferred Side setting.
+function scoutingLaneLines(laneData, side) {
+  const l = laneData[side];
+  const fmt = key => `left ${l.left[key] || 0} / center ${l.center[key] || 0} / right ${l.right[key] || 0}`;
+  return [
+    `Opportunity origin lane (where the attack started): ${fmt('opportunityStarts')}`,
+    `PB delivery origin lane (where the pass into the box came from): ${fmt('pbEntries')}`,
+    `Shot origin lane (where the shot itself was taken from): ${fmt('shots')}`,
+    `Turnover lane (where possession was actually lost — not necessarily where the attack began): ${fmt('turnovers')}`,
+  ];
+}
+
+function scoutingDuelLines(playerStats, side) {
+  const totals = playerStats[side].reduce((acc, p) => {
+    acc.played += p.duelsPlayed; acc.position += p.duelsWonPosition;
+    acc.control += p.duelsWonControl; acc.tackle += p.duelsWonTackle;
+    return acc;
+  }, { played: 0, position: 0, control: 0, tackle: 0 });
+  if (!totals.played) return ['No recorded duels.'];
+  const won = totals.position + totals.control + totals.tackle;
+  return [
+    `Duels competed in: ${totals.played}, won: ${won} (${formatPct(won, totals.played)})`,
+    `Won breakdown — Position: ${totals.position}, Control: ${totals.control}, Tackle: ${totals.tackle}`,
+  ];
+}
+
+function scoutingTurnoverLines(turnovers, side) {
+  const own = turnovers.filter(t => t.losingSide === side);
+  if (!own.length) return ['No recorded turnovers.'];
+  const byCause = {};
+  own.forEach(t => { byCause[t.cause] = (byCause[t.cause] || 0) + 1; });
+  const causeLines = Object.entries(byCause).sort((a, b) => b[1] - a[1]).map(([cause, n]) => `${cause}: ${n}`);
+  const ledToCA = own.filter(t => t.causedCounterAttack).length;
+  return [
+    `Total turnovers: ${own.length} (${causeLines.join(', ')})`,
+    ...(ledToCA ? [`${ledToCA} led directly into a counter-attack against them`] : []),
+  ];
+}
+
+function scoutingSetPieceLines(setPieces, side) {
+  const lines = [];
+  [['corner', 'Corners'], ['deliveredFreeKick', 'Delivered free kicks'], ['directFreeKick', 'Direct free kicks']]
+    .forEach(([kind, label]) => {
+      const cat = setPieces[kind][side];
+      if (!cat?.attempts) return;
+      lines.push(kind === 'directFreeKick'
+        ? `${label}: ${cat.attempts} attempt(s), ${cat.goals} goal(s)`
+        : `${label}: ${cat.attempts} attempt(s), duel record ${cat.duelWins}-${cat.duelLosses}, ${cat.shots} shot(s), ${cat.goals} goal(s)`);
+    });
+  return lines.length ? lines : ['No recorded set pieces.'];
+}
+
+function scoutingDuelLeaderLines(playerStats, side) {
+  const players = playerStats[side];
+  if (!players.length) return ['No named players observed.'];
+  const top = (key, single, joint) => topTiedLine(players, p => p[key], p => p.name, { single, joint });
+  return [
+    top('goals', 'Top scorer', 'Joint top scorers'),
+    top('assists', 'Most final passes before a goal (DERIVED)', 'Joint most final passes before a goal (DERIVED)'),
+    top('duelsPlayed', 'Most duels', 'Joint most duels'),
+    top('tackles', 'Most tackles', 'Joint most tackles'),
+  ].filter(Boolean);
+}
+
+// "Shots faced" includes off-target/blocked attempts whenever the narrative still named
+// a keeper for them — stated explicitly here rather than left to imply "on target only".
+// On target / off target are shown as their own explicit breakdown instead of folded
+// into shots faced silently.
+function scoutingGoalkeeperLines(gkAnalysis, side) {
+  const gks = Object.values(gkAnalysis.byGoalkeeper || {}).filter(g => g.side === side);
+  if (!gks.length) return ['No named goalkeeper observed.'];
+  return gks.map(g => {
+    const parts = [
+      `${g.name}: ${g.shotsFaced} shot(s) faced (${g.onTarget} on target, ${g.offTargetOrBlocked} off target/blocked${g.unresolved ? `, ${g.unresolved} unresolved` : ''})`,
+      `${g.saves} held/saved, ${g.fumbles} parried/fumbled, ${g.goalsConceded} conceded`,
+    ];
+    if (g.interceptions) parts.push(`${g.interceptions} interception(s) (not counted as shots faced)`);
+    if (g.avgSaveValue != null) parts.push(`avg save quality ${g.avgSaveValue}`);
+    return parts.join(', ');
+  });
+}
+
+function scoutingCardsInjuriesLines(playerStats, side) {
+  const players = playerStats[side];
+  const lines = [
+    ...players.filter(p => (p.yellowCards || []).length).map(p => `Booked: ${p.name} (${p.yellowCards.join("', ")}')`),
+    ...players.filter(p => (p.injuries || []).length).map(p => `Injured: ${p.name} (${p.injuries.map(i => `${i.severity || '?'} at ${i.minute}'`).join(', ')})`),
+  ];
+  return lines.length ? lines : ['No cards or injuries recorded.'];
+}
+
+// The manual mechanic itself, stated once per report rather than re-derived per player —
+// see this file's own tirednessPenalty(): TIRED starts at a 5% skill penalty and grows
+// 1 percentage point per minute after the report, capped at 20%; VERY_TIRED is a flat
+// 20%. This is the documented mechanic, not a claim that it explains any specific duel
+// outcome in this match.
+const FATIGUE_MANUAL_NOTE = 'Manual mechanic: TIRED applies a skill penalty starting at 5% and rising 1 percentage point per minute after the report, capped at 20%; VERY_TIRED is a flat 20%. Stated here as documented game mechanics, not as the explanation for any specific result in this match.';
+
+function scoutingFatigueLines(fatigue, side) {
+  const rows = fatigue.filter(f => f.side === side).sort((a, b) => a.firstTiredMinute - b.firstTiredMinute);
+  if (!rows.length) return ['No tiredness reported.'];
+  return rows.map(f => {
+    const veryTired = f.firstVeryTiredMinute != null ? `, very tired ${f.firstVeryTiredMinute}'` : '';
+    const sub = f.substitutedAtMinute != null ? `, substituted ${f.substitutedAtMinute}'` : ', remained on pitch';
+    return `${f.player.name}: tired ${f.firstTiredMinute}'${veryTired}${sub}`;
+  });
+}
+
+function scoutingRolesLines(involvement, side) {
+  const top = (bucket, single, joint) => {
+    const arr = Object.values(involvement[bucket] || {}).filter(p => p.side === side);
+    return topTiedLine(arr, p => p.count, p => p.name, { single, joint });
+  };
+  return [
+    top('starts', 'Main opportunity starter', 'Joint main opportunity starters'),
+    top('progressors', 'Main progression player', 'Joint main progression players'),
+    top('pbSuppliers', 'Main PB supplier', 'Joint main PB suppliers'),
+    top('pbReceivers', 'Main PB target', 'Joint main PB targets'),
+    top('shotTakers', 'Main shot taker', 'Joint main shot takers'),
+    // The old single "Most exposed defender" role collapsed two different questions
+    // (who's simply present in the most shot chains vs. who specifically loses the
+    // earliest duel most often) into one number — see scoutingDefensiveExposureLines,
+    // just below, for both dimensions kept separate.
+  ].filter(Boolean);
+}
+
+// "Earliest failed defensive contest in shot chain" (not "first failed defensive
+// contest", which read as if it meant sole responsibility) identifies the earliest
+// observed defensive duel LOST during the sequence leading to a shot — later defensive
+// losses in the same attack are not counted in this field (defensiveExposure/
+// findFirstFailedDefensiveStage's own conservative, unchanged definition). This does not
+// imply causation or sole responsibility for what followed.
+const DEFENSIVE_EXPOSURE_NOTE = 'Note: "earliest failed defensive contest" identifies the earliest observed defensive duel lost during the sequence; later defensive losses in the same attack are not counted in this field. This is not a claim of causation or sole responsibility.';
+
+function scoutingDefensiveExposureLines(exposure, side) {
+  const rows = exposure.filter(e => e.side === side && e.shotChainsInvolvedIn > 0);
+  if (!rows.length) return ['No defensive-chain exposure recorded.'];
+  const mostInvolved = [...rows].sort((a, b) => b.shotChainsInvolvedIn - a.shotChainsInvolvedIn)[0];
+  const failedRows = rows.filter(e => e.firstFailedDefensiveStageCount > 0).sort((a, b) => b.firstFailedDefensiveStageCount - a.firstFailedDefensiveStageCount);
+  const lines = [
+    DEFENSIVE_EXPOSURE_NOTE,
+    '',
+    `Most involved in opponent shot chains: ${mostInvolved.player} (${mostInvolved.shotChainsInvolvedIn})`,
+    failedRows.length
+      ? `Most frequent earliest failed defender: ${failedRows[0].player} (${failedRows[0].firstFailedDefensiveStageCount})`
+      : 'Most frequent earliest failed defender: none observed',
+    '',
+  ];
+  return lines.concat(rows.sort((a, b) => b.shotChainsInvolvedIn - a.shotChainsInvolvedIn).slice(0, 8).map(e =>
+    `${e.player}: involved in ${e.shotChainsInvolvedIn} opponent shot chain(s), earliest failed defensive contest in ${e.firstFailedDefensiveStageCount} (${e.goalsFollowingLoss} goal(s) followed)`));
+}
+
+// ── Markdown tables ──────────────────────────────────────────────────────────────────
+function mdTable(headers, rows) {
+  if (!rows.length) return null;
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(r => `| ${r.join(' | ')} |`),
+  ].join('\n');
+}
+
+// "Prefer useful scouting matchups rather than dumping every 1-v-1" — only pairs that
+// actually recurred (2+ contests) are shown, ranked by how often they recurred, capped
+// to a readable count. A single-occurrence pairing is not a pattern yet.
+// Every matchup necessarily spans both sides (one attacker, one defender, always from
+// opposite teams), so an unscoped "which team is this?" filter would always be true —
+// there is no such thing as a matchup exclusive to one side. side+role together DO
+// produce a genuinely one-sided view ("matchups where THIS team attacked"), which is
+// what the PB attacking/defending subsections use; called with no role at all, this
+// returns the single shared, match-wide table (see buildScoutingReport's one global
+// "Key Matchups" section, not duplicated per team).
+function scoutingMatchupTable(matchups, { side, role, zone, minContests = 2, maxRows = 8 } = {}) {
+  const sideKey = role === 'attacker' ? 'attackerSide' : role === 'defender' ? 'defenderSide' : null;
+  let rows = matchups.filter(m => m.contests >= minContests && (!zone || m.zone === zone) && (!sideKey || m[sideKey] === side));
+  rows.sort((a, b) => b.contests - a.contests);
+  rows = rows.slice(0, maxRows);
+  if (!rows.length) return 'No repeated matchups observed (each pairing occurred at most once).';
+  return mdTable(
+    ['Attacker', 'Defender', 'Zone', 'Duels', 'Attacker won', 'Shots', 'Goals'],
+    rows.map(m => [m.attacker, m.defender, m.zone, m.contests,
+      `${m.attackerWins} (${formatPct(m.attackerWins, m.contests)})`, m.shotsAfterAttackerWin, m.goalsAfterAttackerWin]),
+  );
+}
+
+function scoutingPBTargetsTable(targets, side) {
+  const rows = targets.filter(t => t.side === side && t.pbContests > 0).sort((a, b) => b.pbContests - a.pbContests).slice(0, 10);
+  if (!rows.length) return 'No PB contests observed.';
+  return mdTable(
+    ['Player', 'PB contests', 'Won', 'Lost', 'Shots', 'Goals', 'Main defender'],
+    rows.map(t => [t.player, t.pbContests, t.won, t.lost, t.shots, t.goals,
+      t.mainDefender ? `${t.mainDefender.name} (${t.mainDefender.contests})` : 'n/a']),
+  );
+}
+
+function scoutingPBDefendersTable(defenders, side) {
+  const rows = defenders.filter(d => d.side === side && d.contests > 0).sort((a, b) => b.contests - a.contests).slice(0, 10);
+  if (!rows.length) return 'No PB contests observed.';
+  return mdTable(
+    ['Defender', 'Contests', 'Won', 'Lost', 'Shots allowed', 'Goals allowed', 'Main opponent'],
+    rows.map(d => [d.player, d.contests, d.won, d.lost, d.shotsAllowedAfterLoss, d.goalsAllowedAfterLoss,
+      d.mainOpponent ? `${d.mainOpponent.name} (${d.mainOpponent.contests})` : 'n/a']),
+  );
+}
+
+// Same "recurring, not every occurrence" filter as scoutingMatchupTable — a route used
+// once is an observation, not yet a pattern worth scouting for.
+function scoutingRoutesLines(routes, side) {
+  const rows = routes.filter(r => r.side === side && r.occurrences >= 2).slice(0, 10);
+  if (!rows.length) return ['No repeated attacking route observed (each progression sequence occurred at most once).'];
+  return rows.map(r => {
+    const chainStr = r.chain.map(n => `${n.name} ${n.position || '?'}`).join(' → ');
+    return `${chainStr} — ${r.occurrences} times (${r.pbEntries} PB entr${r.pbEntries === 1 ? 'y' : 'ies'}, ${r.shots} shot(s), ${r.goals} goal(s))`;
+  });
+}
+
+// ── Scouting Signals ─────────────────────────────────────────────────────────────────
+// Deterministic, threshold-based observations only — no tactical inference, no
+// recommendation. Each rule states its own selection criteria inline; a rule that
+// doesn't clear its threshold on this match simply produces no bullet rather than
+// forcing a weak signal into the report. Every bullet is phrased as an observed
+// count/ratio ("N/M opportunities..."), never as a preference or hidden setting — e.g. a
+// lane-origin skew is reported as a distribution, not as evidence of a Preferred Side.
+//
+// Candidates are generated in priority order (1 = funnel/termination anomaly, 2 = PB
+// attacking success/failure, 3 = PB defender exposure, 4 = dominant repeated matchup,
+// 5 = route/lane concentration, 6 = fatigue/substitution pattern), each tagged with the
+// specific player it's about (if any) and which side it belongs to, so two later
+// candidates that describe the same underlying vulnerability as an earlier, higher-
+// priority one can be suppressed instead of restating it — e.g. "Defender X lost 7/11
+// PB contests" (priority 3) and "Attacker Y beat X 6/8" (priority 4) are the same story;
+// only the higher-priority one survives. The result is then capped per side.
+const SCOUTING_SIGNAL_MAX_PER_SIDE = 6;
+
+function buildScoutingSignals(pre, teamNames) {
+  const candidates = [];
+  const push = (priority, side, player, text) => candidates.push({ priority, side, player, text });
+
+  for (const side of ['home', 'away']) {
+    const team = teamNames[side];
+    const f = pre.funnel[side];
+    // Priority 1: funnel/termination anomaly.
+    if (f.reachedPenaltyBox >= 3 && f.shots / f.reachedPenaltyBox < 0.5)
+      push(1, side, null, `${team}: ${f.shots}/${f.reachedPenaltyBox} opportunities that reached the PB produced a shot.`);
+    const termEntries = Object.entries(pre.termination[side] || {}).sort((a, b) => b[1] - a[1]);
+    if (termEntries.length) {
+      const [topCat, topCount] = termEntries[0];
+      if (topCount >= 3 && f.total && topCount / f.total >= 0.4)
+        push(1, side, null, `${team}: ${topCount}/${f.total} attacking sequences ended in ${(TERMINATION_LABELS[topCat] || topCat).toLowerCase()}.`);
+    }
+
+    // Priority 2: PB attacking success/failure (a named target's own conversion record).
+    for (const t of pre.pbTargets.filter(p => p.side === side && p.pbContests >= 3)) {
+      const rate = t.won / t.pbContests;
+      if (rate >= 0.75) push(2, side, t.player, `${t.player} (${team}): won ${t.won}/${t.pbContests} PB contests as the attacker.`);
+      else if (rate <= 0.25) push(2, side, t.player, `${t.player} (${team}): won only ${t.won}/${t.pbContests} PB contests as the attacker.`);
+    }
+
+    // Priority 5: route/lane concentration.
+    const l = pre.laneData[side];
+    const pbTotal = (l.left.pbEntries || 0) + (l.center.pbEntries || 0) + (l.right.pbEntries || 0);
+    if (pbTotal >= 5) {
+      for (const laneName of ['left', 'center', 'right']) {
+        const n = l[laneName].pbEntries || 0;
+        if (n / pbTotal >= 0.6) push(5, side, null, `${team}: ${n}/${pbTotal} PB deliveries originated from ${laneName} positions.`);
+      }
+    }
+    const topRoute = pre.routes.filter(r => r.side === side)[0];
+    if (topRoute && topRoute.occurrences >= 3)
+      push(5, side, null, `${team}: the route ${topRoute.chain.map(n => `${n.name} ${n.position || '?'}`).join(' → ')} recurred ${topRoute.occurrences} times.`);
+
+    // Priority 6: fatigue/substitution pattern.
+    const veryTiredCount = pre.fatigue.filter(p => p.side === side && p.firstVeryTiredMinute != null).length;
+    if (veryTiredCount >= 3) push(6, side, null, `${team}: ${veryTiredCount} starter(s) were reported very tired before full time.`);
+  }
+
+  // Priority 3: PB defender exposure.
+  for (const d of pre.pbDefenders) {
+    if (d.contests >= 3 && d.lost / d.contests >= 0.5)
+      push(3, d.side, d.player, `${d.player} (${teamNames[d.side] || d.side}): lost ${d.lost}/${d.contests} PB contests; ${d.shotsAllowedAfterLoss} followed by a shot.`);
+  }
+
+  // Priority 4: dominant repeated matchup — owned by whichever side the skew favors
+  // (a high attacker win rate is that attacker's side's story; a low one is the
+  // defender's side's story), so it can be suppressed against a same-player signal
+  // already raised at a higher priority for that same side.
+  for (const m of pre.matchups) {
+    if (m.contests < 3) continue;
+    if (m.attackerWinRate >= 0.66) push(4, m.attackerSide, m.attacker,
+      `${m.attacker} vs ${m.defender} (${m.zone}): attacker won ${m.attackerWins}/${m.contests} (${formatPct(m.attackerWins, m.contests)}).`);
+    else if (m.attackerWinRate <= 0.34) push(4, m.defenderSide, m.defender,
+      `${m.attacker} vs ${m.defender} (${m.zone}): attacker won only ${m.attackerWins}/${m.contests} (${formatPct(m.attackerWins, m.contests)}).`);
+  }
+
+  candidates.sort((a, b) => a.priority - b.priority);
+  const kept = [];
+  const coveredPlayers = { home: new Set(), away: new Set() };
+  const perSideCount = { home: 0, away: 0 };
+  for (const c of candidates) {
+    if (perSideCount[c.side] >= SCOUTING_SIGNAL_MAX_PER_SIDE) continue;
+    if (c.player && coveredPlayers[c.side]?.has(c.player)) continue; // same story already told, higher priority
+    kept.push(c);
+    perSideCount[c.side]++;
+    if (c.player) coveredPlayers[c.side].add(c.player);
+  }
+
+  return kept.length ? kept.map(c => c.text) : ['No threshold-crossing pattern observed in this single match.'];
+}
+
+function buildTeamScoutingSection(match, side, teamName, pre) {
+  const scorers = groupByPlayer(pre.scorers, s => s.scorer).filter(e => e.teamSide === side);
+  const assisters = groupByPlayer(pre.scorers.filter(s => s.assist?.name), s => s.assist).filter(e => e.teamSide === side);
+  const fmtEntries = entries => entries.map(e => `${e.name} (${e.mins.map(m => m.minute + "'").join(', ')})`).join('; ');
+  return [
+    `## ${teamName} (${side})`,
+    '',
+    `Scorers: ${scorers.length ? fmtEntries(scorers) : 'none'}`,
+    // "Assist" is a real-football convention FinalWhistle's own report does not use —
+    // this is DERIVED (the last pass step before the goal whose target was the scorer;
+    // see findAssist()), not an FW-sourced fact, so it is labeled for what it actually
+    // is rather than importing a term the source data doesn't establish.
+    `Final pass before goal (DERIVED, not an FW-sourced "assist"): ${assisters.length ? fmtEntries(assisters) : 'none'}`,
+
+    '', '### Match / Tactics',
+    '#### Initial tactics', ...scoutingInitialTacticsLines(match, side),
+    '', '#### Tactical changes', ...scoutingTacticalChangeLines(match, side),
+
+    '', '### Attack',
+    '#### Attacking funnel', ...scoutingFunnelLines(pre.funnel, side),
+    '', '#### Where attacks ended', ...scoutingTerminationLines(pre.termination, side),
+    '', '#### Attacking lanes', ...scoutingLaneLines(pre.laneData, side),
+    '', '#### Common attacking routes', ...scoutingRoutesLines(pre.routes, side),
+    '', '#### Penalty box targets', scoutingPBTargetsTable(pre.pbTargets, side),
+    '', '#### Shot profile', ...scoutingShotLines(pre.shotProfile, side),
+    '', '#### Pass tendencies', ...scoutingPassLines(pre.passProfile, side),
+
+    '', '### Defence',
+    '#### Penalty box defending', scoutingPBDefendersTable(pre.pbDefenders, side),
+    '', `#### PB matchups — ${teamName} attacking`, scoutingMatchupTable(pre.matchups, { side, role: 'attacker', zone: 'PENALTY_BOX' }),
+    '', `#### PB matchups — ${teamName} defending`, scoutingMatchupTable(pre.matchups, { side, role: 'defender', zone: 'PENALTY_BOX' }),
+    '', '#### Defensive-chain exposure', ...scoutingDefensiveExposureLines(pre.exposure, side),
+    '', '#### Turnovers (possession lost)', ...scoutingTurnoverLines(pre.turnovers, side),
+
+    '', '### Players',
+    '#### Duel leaders', ...scoutingDuelLeaderLines(pre.playerStats, side),
+    '', '#### Duels', ...scoutingDuelLines(pre.playerStats, side),
+    '', '#### Key roles', ...scoutingRolesLines(pre.involvement, side),
+
+    '', '### Physical / Discipline',
+    '#### Fatigue timeline', FATIGUE_MANUAL_NOTE, '', ...scoutingFatigueLines(pre.fatigue, side),
+    '', '#### Cards & injuries', ...scoutingCardsInjuriesLines(pre.playerStats, side),
+
+    '', '### Set pieces / GK',
+    '#### Set pieces', ...scoutingSetPieceLines(pre.setPieces, side),
+    '', '#### Goalkeeper', ...scoutingGoalkeeperLines(pre.gkAnalysis, side),
+  ].join('\n');
+}
+
+function buildScoutingReport(match = _match, scrape = _lastRenderedScrape) {
+  if (!match) return 'No match loaded. Scrape or load a match first.';
+  const homeTeam = match.meta?.homeTeam || scrape?.homeTeam || 'Home';
+  const awayTeam = match.meta?.awayTeam || scrape?.awayTeam || 'Away';
+  const fs = match.meta?.finalScore;
+  const score = fs ? `${fs.home ?? '?'}-${fs.away ?? '?'}` : 'unknown';
+
+  const pre = {
+    funnel: opportunityFunnel(match),
+    shotProfile: shotProfileAnalysis(match),
+    passProfile: passProfileAnalysis(match),
+    laneData: laneAnalysis(match),
+    turnovers: turnoverAnalysis(match),
+    setPieces: setPieceAnalysis(match),
+    playerStats: playerStatistics(match),
+    scorers: buildScorers(match),
+    termination: attackTermination(match),
+    routes: attackingRoutes(match),
+    matchups: duelMatchups(match),
+    pbTargets: pbTargetAnalysis(match),
+    pbDefenders: pbDefenderAnalysis(match),
+    exposure: defensiveExposure(match),
+    involvement: playerInvolvementChains(match),
+    fatigue: fatigueImpact(match),
+    gkAnalysis: goalkeeperAnalysis(match),
+  };
+
+  const summary = [
+    '# FinalWhistle Scouting Report',
+    '',
+    `Match: ${homeTeam} vs ${awayTeam}, final score ${score}`,
+    scrape?.scrapedAt ? `Scraped: ${new Date(scrape.scrapedAt).toISOString()}` : null,
+    '',
+    'Curated summary of one match, covering both teams — this extension has no concept of "my team" vs "opposition", only home/away, so apply whichever side is relevant. Full raw narrative + telemetry follows for anything the summary leaves out.',
+    '',
+    buildTeamScoutingSection(match, 'home', homeTeam, pre),
+    buildTeamScoutingSection(match, 'away', awayTeam, pre),
+    // A matchup always spans both teams (one attacker, one defender, from opposite
+    // sides), so this is shown once, match-wide, rather than duplicated identically
+    // inside each team's own section.
+    '## Key Matchups',
+    '',
+    scoutingMatchupTable(pre.matchups, {}),
+    '',
+    '## Scouting Signals',
+    '',
+    ...buildScoutingSignals(pre, { home: homeTeam, away: awayTeam }),
+  ].filter(line => line !== null).join('\n');
+
+  const raw = [
+    '## Raw narrative', '', '```', scrape?.narrative || '(not available)', '```', '',
+    '## Raw telemetry', '', '```', scrape?.telemetry || '(not available)', '```',
+  ].join('\n');
+
+  return summary + '\n' + raw;
 }
 
 function buildDiagnosticReport(scrape = _lastRenderedScrape, match = _match) {
@@ -2763,9 +3344,11 @@ async function createExportJpeg(scope) {
 }
 
 function updateExportControls() {
+  const hasMatch = !!_match?.opportunities?.length;
+  const copyBtn = $('btn-copy-scouting');
+  if (copyBtn) copyBtn.disabled = !hasMatch;
   const scopeEl = $('export-scope');
   if (!scopeEl) return;
-  const hasMatch = !!_match?.opportunities?.length;
   const hasPin = hasMatch && Number.isSafeInteger(getPinnedIdx());
   scopeEl.disabled = !hasMatch;
   const possessionOption = $('export-possession-option');
@@ -2900,6 +3483,24 @@ $('btn-new-tab').addEventListener('click', async () => {
 
 $('btn-save-jpg').addEventListener('click', saveJpg);
 $('export-scope').addEventListener('change', updateExportControls);
+
+async function copyScoutingReport(button) {
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  try {
+    await writeClipboardText(buildScoutingReport());
+    button.textContent = 'Copied!';
+  } catch (error) {
+    console.error('Could not copy scouting report', error);
+    button.textContent = 'Copy failed';
+  }
+  setTimeout(() => {
+    button.textContent = originalLabel;
+    button.disabled = false;
+  }, 1800);
+}
+$('btn-copy-scouting').addEventListener('click', () => copyScoutingReport($('btn-copy-scouting')));
+
 updateExportControls();
 
 // Launch behavior depends on how this tab was opened:

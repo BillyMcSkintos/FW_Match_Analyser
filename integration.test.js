@@ -230,7 +230,13 @@ test('observed rebound: counter-attack fumble then saved lob stays two aligned a
   assert.equal(shots[0].looseBallRecovery.side, 'away');
   assert.equal(shots[1].shotType, 'lob');
   assert.deepEqual(shots.map(s => s.attackingSide), ['away', 'away']);
-  assert.equal(A.opportunityFunnel(match).entries[0].shotCount, 2);
+  // The parent opportunity opened for home but both shots belong to the counter-attacking
+  // away sequence — opportunityFunnel now returns one entry per ATTACKING SEQUENCE (home's
+  // own pre-CA sequence, then away's post-CA sequence), not one blended entry at [0], so
+  // the away-side entry is the one carrying the shots.
+  const awayFunnelEntry = A.opportunityFunnel(match).entries.find(e => e.teamSide === 'away');
+  assert.equal(awayFunnelEntry.shotCount, 2);
+  assert.equal(awayFunnelEntry.isCounterAttack, true);
   assert.equal(A.counterAttackAnalysis(match).away.shots, 2);
   assert.equal(A.counterAttackAnalysis(match).home.shotsConceded, 2);
   assert.equal(A.phasePerformance(match, 'home')[0].opponentShots, 2);

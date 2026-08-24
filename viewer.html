@@ -134,6 +134,21 @@ select:disabled{opacity:.4}
 .ob-foul{background:#3a2a00;color:#e0c068}.ob-fk{background:#3a1800;color:#e0895a}
 .ob-fumbled{background:#3a1800;color:#e0895a}
 .ob-cleared,.ob-won{background:#1a2030;color:#8a9ab0}
+.val-dash .val-num{color:#5a6a85}
+/* Offense (attacker/shooter) always on the left, defense (defender/goalkeeper) always on
+   the right — no OFF/DEF text label, since which side is which is already conveyed by
+   position; player names use the same p-nm/p-pos styling as every other row instead of a
+   shrunken label line. The 108px alignment width on the base .val-item exists for the old
+   single-column stat list, where many rows of the same step type needed matching columns
+   — it only fights this narrower half-width layout, so it's dropped here in favor of
+   letting each stat hug its own content, with an explicit second line (.stat-line) so a
+   long block (Ast + Pos + Tack) breaks at a clean, chosen point instead of wherever the
+   browser runs out of room. */
+.split{display:flex;gap:6px}
+.split-off{flex:1;min-width:0;border-left:2px solid #3a4a6a;padding-left:6px}
+.split-def{flex:1;min-width:0;border-left:2px solid #4a3a2a;padding-left:6px}
+.split-off .val-item,.split-def .val-item{min-width:0;margin-right:6px}
+.stat-line{display:block;margin-top:1px}
 
 /* ── Tactical events ── */
 .tac-row{display:flex;align-items:center;gap:7px;padding:3px 8px;border-left:2px solid transparent;font-size:11px;color:#8a9ab0}
@@ -212,6 +227,7 @@ select:disabled{opacity:.4}
         <option value="overview">Overview</option>
       </select>
       <button id="btn-save-jpg" title="Save the current view as a local JPG — nothing is uploaded" disabled>Save JPG</button>
+      <button id="btn-copy-scouting" title="Copy a paste-ready scouting report (curated summary + full raw data, both teams) to the clipboard" disabled>Copy Scouting Report</button>
     </div>
     <div id="errors"></div>
     <div class="tabs" id="tabs" style="display:none">
