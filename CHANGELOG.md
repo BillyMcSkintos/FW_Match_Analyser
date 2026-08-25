@@ -41,7 +41,6 @@ much engineering for what it added and was dropped.
   round — noted here since it was reported as still visibly broken in a live-generated
   report; the fix just hadn't been reloaded into the running extension build yet).
 
-
 ## [0.6.2] — Duel-detail split view and narrative positioning capture
 
 ### Added

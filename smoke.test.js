@@ -23,6 +23,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
+const { makeStubElement } = require('./test-helpers.js');
 
 function extractScriptOrder(htmlPath) {
   const html = fs.readFileSync(htmlPath, 'utf8');
@@ -31,14 +32,6 @@ function extractScriptOrder(htmlPath) {
   let m;
   while ((m = re.exec(html))) files.push(m[1]);
   return files;
-}
-
-function makeStubElement() {
-  return {
-    style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    children: [], textContent: '', innerHTML: '',
-    addEventListener(){}, querySelector(){ return null; }, querySelectorAll(){ return []; },
-  };
 }
 
 test('viewer.html\'s own script order loads cleanly into one shared context, with no lexical collision', () => {

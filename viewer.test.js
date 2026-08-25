@@ -12,15 +12,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
-
-function makeStubElement() {
-  const el = {
-    style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    children: [], textContent: '', innerHTML: '',
-    addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
-  };
-  return el;
-}
+const { makeStubElement } = require('./test-helpers.js');
 
 function loadViewerContext({ namespace = 'chrome' } = {}) {
   const src = fs.readFileSync(path.join(__dirname, 'viewer.js'), 'utf8');
@@ -465,6 +457,7 @@ test('Scouting Assessment: the physical-vulnerability count is labeled to match 
   assert.match(report, /3 starter\(s\) reached VERY_TIRED before full time/);
   assert.doesNotMatch(report, /reached TIRED\/VERY_TIRED/, 'the label must not claim to count plain-TIRED players when only VERY_TIRED is actually counted');
 });
+
 test('goalkeeper aggregation reconciles even for the currently-unreachable CORNER shot outcome (defensive correctness, not just the reachable paths)', () => {
   const ctx = loadViewerContext();
   const gk = { name: 'Keeper', position: 'GK' };

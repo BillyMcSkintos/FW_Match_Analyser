@@ -8,6 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { parseMatch, tacticalStateAt, buildTacticalPhases, phaseIdAt, deriveFormation } = require('./parser.js');
+const { HA, midOppLines, midTelemetryLines } = require('./test-helpers.js');
 
 function stepTypes(opp) { return opp.steps.map(s => s.stepType); }
 function outcomeOf(opp, stepType) { return opp.steps.find(s => s.stepType === stepType)?.outcome; }
@@ -1537,28 +1538,6 @@ test('an opportunity with no matching stream block reports none confidence', () 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tactical state: tacticalStateAt, buildTacticalPhases, opportunity association
 // ─────────────────────────────────────────────────────────────────────────────
-
-function midOppLines(team, passer, target, defender) {
-  return [
-    `Opportunity for ${team}.`,
-    'Midfield',
-    `${passer} attempted low good pass to ${target}`,
-    `${defender} got decent assistance, and was in decent position.`,
-    `${target} made weak reception, ${defender} made superb tackle.`,
-    `${defender} cleared the ball to safety.`,
-  ];
-}
-function midTelemetryLines(minute, side) {
-  const opp = side === 'H' ? 'A' : 'H';
-  return [
-    `${minute}' - ${side} - O_MID_START`,
-    `${minute}' - ${side} - V_PASS - (30)`,
-    `${minute}' - ${opp} - V_ASSISTANCE - (40)`,
-    `${minute}' - ${side} - V_RECEPTION - (25)`,
-    `${minute}' - ${opp} - V_TACKLING - (70)`,
-  ];
-}
-const HA = { homeTeam: 'Home Team', awayTeam: 'Away Team' };
 
 test('tacticalStateAt at kickoff returns fully unknown team state and no players', () => {
   const narrative = ['Minute 5', ...midOppLines('Home Team', 'Player A [RB]', 'Player B [CM]', 'Player C [DM]')].join('\n');
