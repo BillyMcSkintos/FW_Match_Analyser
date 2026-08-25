@@ -1833,13 +1833,12 @@ function renderSquadTab(match) {
 
 function fmtDelta(n) { return n == null ? '—' : (n >= 0 ? '+' : '') + n; }
 
-// Takes the already-computed `perf` array and the index into it, rather than calling
-// analytics.js's compareAdjacentPhases(match, side, phaseId) —
-// that function independently re-runs phasePerformance() (which itself re-runs
-// turnoverAnalysis() over every opportunity) from scratch on every call. Called once per
-// phase card, that turned "compute phasePerformance for this side" into an O(phases)
-// repeat of the same whole-match computation for no different result — the delta here is
-// simple subtraction over two rows analytics.js already handed back once.
+// Takes the already-computed `perf` array and the index into it rather than re-deriving
+// a phase-vs-previous-phase comparison independently — phasePerformance() itself re-runs
+// turnoverAnalysis() over every opportunity, so redoing that per phase card would turn
+// "compute phasePerformance for this side" into an O(phases) repeat of the same
+// whole-match computation for no different result. The delta here is simple subtraction
+// over two rows analytics.js already handed back once.
 function renderPhaseComparisonCard(perfRow, prevPerfRow, col) {
   const period = perfRow.endMinute != null ? `${perfRow.startMinute}–${perfRow.endMinute}'` : `${perfRow.startMinute}'+`;
   const deltaLine = prevPerfRow
@@ -2442,7 +2441,9 @@ function buildScoutingSignals(pre, teamNames) {
 // Confidence is a function of in-match SAMPLE SIZE only (an editorial threshold this
 // project defines): HIGH needs a repeated, substantial pattern; MEDIUM a real but
 // limited sample; LOW a single or near-single occurrence. Never a claim of a persistent
-// tendency — see SINGLE_MATCH_EVIDENCE_NOTE.
+// tendency — see SINGLE_MATCH_EVIDENCE_NOTE. Not the same tiering as analytics.js's
+// sampleSizeHint() (a 4-way prose hint at different thresholds, for a different use) —
+// see that function's own note.
 function evidenceConfidence(n) {
   if (n >= 6) return 'HIGH';
   if (n >= 3) return 'MEDIUM';

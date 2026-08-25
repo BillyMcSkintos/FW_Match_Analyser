@@ -70,6 +70,10 @@ function avg(arr) { return arr.length ? round2(arr.reduce((a, b) => a + b, 0) / 
 // significance claim. No p-values or confidence intervals are computed anywhere in this
 // file; thresholds are display buckets only, adjustable without changing any underlying
 // calculation.
+// Not the same tiering as viewer.js's evidenceConfidence() (Scouting Assessment's
+// LOW/MEDIUM/HIGH finding tags, thresholds at 3/6) — this is a coarser 4-way prose hint
+// for duel-count samples (fatigue before/after windows, phase windows), thresholds at
+// 2/5/10. Deliberately separate scales for separate purposes, not drifted duplicates.
 function sampleSizeHint(n) {
   if (n == null) return null;
   if (n <= 2) return 'very small sample';
@@ -747,7 +751,7 @@ function windowStats(match, side, oppSide, lo, hi, minuteLower, turnovers) {
 
 // DERIVED, explicitly labeled as a before/after ASSOCIATION, never a causal effect —
 // this function does not and cannot determine whether a tactical change caused any
-// difference it reports (same framing as compareAdjacentPhases below). `windowTooThin`
+// difference it reports. `windowTooThin`
 // flags a comparison spanning under 3 real minutes on either side (too close to
 // kickoff/full time or another change to be meaningful even as description).
 function compareAroundEvent(match, eventId, { beforeMinutes = 15, afterMinutes = 15 } = {}) {
@@ -776,21 +780,6 @@ function compareAroundEvent(match, eventId, { beforeMinutes = 15, afterMinutes =
     label: 'before/after association — not a measured causal effect',
     confidence: parserConfidence(match),
   };
-}
-
-// DERIVED. Compares a tactical phase against the one immediately before it for the same
-// side, using phasePerformance's own per-phase metrics — same "association, not causal
-// effect" framing as compareAroundEvent.
-function compareAdjacentPhases(match, teamSide, phaseId) {
-  const perf = phasePerformance(match, teamSide);
-  const idx = perf.findIndex(p => p.phaseId === phaseId);
-  if (idx <= 0) return null; // no prior phase to compare against
-  const before = perf[idx - 1], after = perf[idx];
-  const delta = {};
-  for (const key of ['ownOpportunities', 'ownShots', 'ownGoals', 'ownPBEntries', 'opponentShots', 'opponentGoals', 'turnoversWon', 'turnoversLost']) {
-    delta[key] = after[key] - before[key];
-  }
-  return { teamSide, before, after, delta, label: 'adjacent-phase association — not a measured causal effect' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1713,7 +1702,7 @@ if (typeof module !== 'undefined' && module.exports) {
     opportunityFunnel, buildFunnelEntry, classifyProgressionType,
     turnoverAnalysis, classifyTurnoverCause,
     defensiveFailureChains, findFirstFailedDefensiveStage,
-    phasePerformance, compareAroundEvent, compareAdjacentPhases,
+    phasePerformance, compareAroundEvent,
     playerDuelAnalysis, playerStatistics, assistanceAnalysis, fatigueImpact,
     laneAnalysis, counterAttackAnalysis, setPieceAnalysis, goalkeeperAnalysis,
     shotProfileAnalysis, passProfileAnalysis, playerInvolvementChains,

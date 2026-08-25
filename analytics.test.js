@@ -11,29 +11,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { parseMatch } = require('./parser.js');
 const A = require('./analytics.js');
-
-const HA = { homeTeam: 'Home Team', awayTeam: 'Away Team' };
-
-function midOppLines(team, passer, target, defender) {
-  return [
-    `Opportunity for ${team}.`,
-    'Midfield',
-    `${passer} attempted low good pass to ${target}`,
-    `${defender} got decent assistance, and was in decent position.`,
-    `${target} made weak reception, ${defender} made superb tackle.`,
-    `${defender} cleared the ball to safety.`,
-  ];
-}
-function midTelemetryLines(minute, side) {
-  const opp = side === 'H' ? 'A' : 'H';
-  return [
-    `${minute}' - ${side} - O_MID_START`,
-    `${minute}' - ${side} - V_PASS - (30)`,
-    `${minute}' - ${opp} - V_ASSISTANCE - (40)`,
-    `${minute}' - ${side} - V_RECEPTION - (25)`,
-    `${minute}' - ${opp} - V_TACKLING - (70)`,
-  ];
-}
+const { HA, midOppLines, midTelemetryLines } = require('./test-helpers.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // opportunityFunnel
